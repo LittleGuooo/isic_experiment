@@ -22,4 +22,4 @@
 ## 执行代码
 python main.py --pretrained
 
-python diffusion.py ---
+python diffusion.py --data_mode alls
