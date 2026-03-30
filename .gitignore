@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# 训练输出
+experiments/
+
+# 数据集
+dataset/
+
