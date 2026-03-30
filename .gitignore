@@ -5,6 +5,10 @@ __pycache__/
 # 训练输出
 experiments/
 
+# 模型权重
+checkpoints/
+pretrained_models/
+
 # 数据集
 dataset/
 
