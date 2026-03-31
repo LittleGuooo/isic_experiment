@@ -66,8 +66,8 @@ def parse_args():
     # 图像和训练超参数
     # -------------------------
     parser.add_argument("--resolution", type=int, default=224)
-    parser.add_argument("--train_batch_size", type=int, default=8)
-    parser.add_argument("--eval_batch_size", type=int, default=8)
+    parser.add_argument("--train_batch_size", type=int, default=4)
+    parser.add_argument("--eval_batch_size", type=int, default=4)
     parser.add_argument("--dataloader_num_workers", type=int, default=4)
     parser.add_argument("--num_epochs", type=int, default=40)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
