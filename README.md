@@ -6,20 +6,17 @@
 - `datasets/`：用于存放原始数据集或处理后的数据集副本。
 - `test.Ipynb`、`day1.py` 等：你的代码和实验脚本。
 
-## 推荐文件命名规范
-- 预训练模型：`resnet18.a1_in1k.safetensors`、`resnet50.a1_in1k.safetensors`
-- 训练权重：`model_epoch10.pth`、`best_model.pth`
-- 日志：`train_2026-03-28.log`、`tensorboard/`
-
-## 说明
-- 请将下载的 timm 或 torchvision 预训练权重放入 `pretrained_models/` 目录。
-- 训练过程中自动保存的模型权重建议放入 `checkpoints/`。
-- 日志和可视化文件建议放入 `logs/`。
-- 数据集建议统一放在 `datasets/`，便于管理和备份。
-
-如需自动加载本地权重或保存模型，请在代码中指定对应目录路径。
-
-## 执行代码
+# 执行代码
 python main.py --pretrained
 
-python diffusion.py --data_mode alls
+python diffusion.py --data_mode all
+
+# 更新说明
+## version 1.0
+最初始的版本
+
+## version 1.1
+diffusion.py加入了数据管线，加入了评价指标逻辑
+
+## version 1.2
+diffusion.py使用了DDIM加速采样
