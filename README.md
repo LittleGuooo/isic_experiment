@@ -9,7 +9,7 @@
 # 执行代码
 python main.py --pretrained
 
-python diffusion.py --data_mode all
+python diffusion.py --data_mode all --use_ddim_sampling --ddpm_num_inference_steps 250 --resolution 224 --num_fid_samples_train 1024 --num_fid_samples_val 0 --mixed_precision fp16
 
 # 更新说明
 ## version 1.0
@@ -20,3 +20,6 @@ diffusion.py加入了数据管线，加入了评价指标逻辑
 
 ## version 1.2
 diffusion.py使用了DDIM加速采样
+
+## version 1.3
+加入实验结果和数据集

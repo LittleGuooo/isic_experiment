@@ -1,0 +1,107 @@
+{
+    "experiment_name": "20260401_123533_ddpm_all_all_labels_res224_bs8_seed42",
+    "experiment_dir": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42",
+    "created_time": "2026-04-01 12:35:33",
+    "seed": 42,
+    "mixed_precision": "no",
+    "resume_from_checkpoint": null,
+    "data": {
+        "meta_csv_path": "dataset/MILK10k_Training_Metadata.csv",
+        "gt_csv_path": "dataset/MILK10k_Training_GroundTruth.csv",
+        "img_dir": "dataset/MILK10k_Training_Input/MILK10k_Training_Input",
+        "data_mode": "all",
+        "target_label": null,
+        "num_classes": 11,
+        "class_names": [
+            "AKIEC",
+            "BCC",
+            "BEN_OTH",
+            "BKL",
+            "DF",
+            "INF",
+            "MAL_OTH",
+            "MEL",
+            "NV",
+            "SCCKA",
+            "VASC"
+        ],
+        "full_dataset_size": 5240,
+        "train_dataset_size": 4716,
+        "val_dataset_size": 524,
+        "class_distribution": {
+            "full_dataset": {
+                "AKIEC": 303,
+                "BCC": 2522,
+                "BEN_OTH": 44,
+                "BKL": 544,
+                "DF": 52,
+                "INF": 50,
+                "MAL_OTH": 9,
+                "MEL": 450,
+                "NV": 746,
+                "SCCKA": 473,
+                "VASC": 47
+            },
+            "train_dataset": {
+                "AKIEC": 273,
+                "BCC": 2270,
+                "BEN_OTH": 40,
+                "BKL": 489,
+                "DF": 47,
+                "INF": 45,
+                "MAL_OTH": 8,
+                "MEL": 405,
+                "NV": 671,
+                "SCCKA": 426,
+                "VASC": 42
+            },
+            "val_dataset": {
+                "AKIEC": 30,
+                "BCC": 252,
+                "BEN_OTH": 4,
+                "BKL": 55,
+                "DF": 5,
+                "INF": 5,
+                "MAL_OTH": 1,
+                "MEL": 45,
+                "NV": 75,
+                "SCCKA": 47,
+                "VASC": 5
+            }
+        }
+    },
+    "model": {
+        "resolution": 224,
+        "ddpm_num_steps": 1000,
+        "ddpm_num_inference_steps": 250,
+        "ddpm_beta_schedule": "linear",
+        "use_ddim_sampling": true,
+        "ddim_eta": 0.0
+    },
+    "training": {
+        "train_batch_size": 8,
+        "eval_batch_size": 8,
+        "num_epochs": 20,
+        "learning_rate": 0.0001,
+        "gradient_accumulation_steps": 1,
+        "start_epoch": 0,
+        "initial_global_step": 0
+    },
+    "paths": {
+        "metrics_csv": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42\\metrics\\epoch_metrics.csv",
+        "metrics_json": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42\\metrics\\epoch_metrics.json",
+        "metadata_json": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42\\metadata\\experiment_metadata.json",
+        "checkpoints_dir": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42\\checkpoints",
+        "samples_dir": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42\\samples",
+        "fid_dir": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42\\fid",
+        "fid_generated_dir": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42\\fid_generated_images",
+        "diffusers_model_index_copy": "experiments\\20260401_123533_ddpm_all_all_labels_res224_bs8_seed42\\metadata\\diffusers_pipeline_model_index.json"
+    },
+    "best_result": {
+        "best_epoch_by_val_fid": -1,
+        "best_val_fid": null,
+        "best_epoch_by_train_fid": -1,
+        "best_train_fid": null,
+        "best_model_path": ""
+    }
+}

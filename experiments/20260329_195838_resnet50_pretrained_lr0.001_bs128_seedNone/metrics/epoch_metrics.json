@@ -1,0 +1,38 @@
+[
+    {
+        "epoch": 1,
+        "lr": 0.001,
+        "train_loss": 1.6078140024819345,
+        "train_acc": 50.57251907426286,
+        "val_loss": 1.3399461653396374,
+        "val_acc": 55.152671755725194,
+        "val_macro_f1": 0.13772120888604145,
+        "val_auroc": 0.6971255650926999,
+        "roc_curve_path": "experiments\\20260329_195838_resnet50_pretrained_lr0.001_bs128_seedNone\\roc_curves\\epoch_001_roc.png",
+        "confusion_matrix_path": "experiments\\20260329_195838_resnet50_pretrained_lr0.001_bs128_seedNone\\confusion_matrices\\epoch_001_confusion_matrix.png"
+    },
+    {
+        "epoch": 2,
+        "lr": 0.001,
+        "train_loss": 1.1687438772127121,
+        "train_acc": 61.959287460624815,
+        "val_loss": 1.2104894487002424,
+        "val_acc": 60.68702290076335,
+        "val_macro_f1": 0.21983394837837292,
+        "val_auroc": 0.7490264213794077,
+        "roc_curve_path": "experiments\\20260329_195838_resnet50_pretrained_lr0.001_bs128_seedNone\\roc_curves\\epoch_002_roc.png",
+        "confusion_matrix_path": "experiments\\20260329_195838_resnet50_pretrained_lr0.001_bs128_seedNone\\confusion_matrices\\epoch_002_confusion_matrix.png"
+    },
+    {
+        "epoch": 3,
+        "lr": 0.001,
+        "train_loss": 1.011801871482956,
+        "train_acc": 66.28498722558511,
+        "val_loss": 1.1435532679084603,
+        "val_acc": 62.786259541984734,
+        "val_macro_f1": 0.24209931672337684,
+        "val_auroc": 0.7743255371661211,
+        "roc_curve_path": "experiments\\20260329_195838_resnet50_pretrained_lr0.001_bs128_seedNone\\roc_curves\\epoch_003_roc.png",
+        "confusion_matrix_path": "experiments\\20260329_195838_resnet50_pretrained_lr0.001_bs128_seedNone\\confusion_matrices\\epoch_003_confusion_matrix.png"
+    }
+]

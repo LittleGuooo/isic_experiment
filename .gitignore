@@ -2,13 +2,14 @@
 __pycache__/
 *.pyc
 
-# 训练输出
-experiments/
-
 # 模型权重
 checkpoints/
 pretrained_models/
 
-# 数据集
-dataset/
+# 格式
+*.jpg
+*.png
+*.zip
+*.tar.gz
+*.pth.tar
 

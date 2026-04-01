@@ -1,0 +1,2 @@
+﻿epoch,lr,train_loss,train_acc,val_loss,val_acc,val_macro_f1,val_auroc,roc_curve_path,confusion_matrix_path
+1,0.001,1.782571810499099,46.967769315426786,1.516302369933092,57.63358778625955,0.1367069805951958,0.6695233502133272,experiments\20260329_175214_resnet50_pretrained_lr0.001_bs256_seedNone\roc_curves\epoch_001_roc.png,experiments\20260329_175214_resnet50_pretrained_lr0.001_bs256_seedNone\confusion_matrices\epoch_001_confusion_matrix.png

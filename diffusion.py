@@ -6,7 +6,6 @@ import random
 import shutil
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -18,7 +17,6 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import transforms
-from torchvision.utils import save_image, make_grid
 
 from accelerate import Accelerator
 from diffusers import DDPMPipeline, DDIMPipeline, DDPMScheduler, DDIMScheduler, UNet2DModel
@@ -26,13 +24,18 @@ from diffusers.optimization import get_scheduler
 
 from torchmetrics.image.fid import FrechetInceptionDistance
 
-
 # =========================================================
 # 1. 参数
 # =========================================================
 def parse_args():
     parser = argparse.ArgumentParser(description="DDPM baseline for MILK10k dermoscopy images")
 
+    # -------------------------
+    # 从已有权重继续训练
+    # -------------------------
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None,
+                        help="Path to a saved checkpoint .pth.tar for resuming training")
+    
     # -------------------------
     # DDIM 采样参数
     # 训练仍然使用 DDPM
@@ -77,8 +80,7 @@ def parse_args():
     # -------------------------
     parser.add_argument("--resolution", type=int, default=128)
     parser.add_argument("--train_batch_size", type=int, default=8)
-    # 可视化评测时，一次生成多少张图；FID评测时，读取real图的batch size和生成fake图的batch size
-    parser.add_argument("--eval_batch_size", type=int, default=32)
+    parser.add_argument("--eval_batch_size", type=int, default=8)
     parser.add_argument("--dataloader_num_workers", type=int, default=4)
     parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
@@ -212,58 +214,35 @@ def save_checkpoint(state, is_best, save_dir, filename="last.pth.tar"):
     if is_best:
         shutil.copyfile(filepath, best_filepath)
 
-def save_sample_images(pipeline, device, save_dir, epoch, eval_batch_size, num_inference_steps,
-                       use_ddim_sampling=False, ddim_eta=0.0):
+
+def disable_pipeline_progress_bar(pipeline):
     """
-    每个评估 epoch 保存一批可视化图片
-
-    参数说明：
-    - pipeline:
-        采样用的 pipeline
-        如果 use_ddim_sampling=True，则这里通常是 DDIMPipeline
-        否则是 DDPMPipeline
-    - num_inference_steps:
-        采样步数
-        使用 DDIM 时，通常可以把这个值设得更小来加速采样
-    - use_ddim_sampling:
-        是否启用 DDIM 采样
-    - ddim_eta:
-        DDIM 的 eta 参数
-        一般设为 0.0，表示确定性采样
+    关闭 diffusers pipeline 自带的内部进度条
     """
-    epoch_dir = os.path.join(save_dir, f"epoch_{epoch:03d}")
-    os.makedirs(epoch_dir, exist_ok=True)
+    if hasattr(pipeline, "set_progress_bar_config"):
+        pipeline.set_progress_bar_config(disable=True)
 
-    generator = torch.Generator(device=device).manual_seed(0)
 
-    # 如果启用了 DDIM，则额外传入 eta
-    if use_ddim_sampling:
-        images = pipeline(
-            batch_size=eval_batch_size,
-            generator=generator,
-            num_inference_steps=num_inference_steps,
-            eta=ddim_eta,
-            output_type="pil",
-        ).images
-    else:
-        images = pipeline(
-            batch_size=eval_batch_size,
-            generator=generator,
-            num_inference_steps=num_inference_steps,
-            output_type="pil",
-        ).images
+def save_diffusers_model_index_copy(exp_dir, metadata_dir):
+    """
+    复制一份更明确命名的 model_index.json 到 metadata 文件夹中。
 
-    for i, image in enumerate(images):
-        image.save(os.path.join(epoch_dir, f"sample_{i:03d}.png"))
+    说明：
+    - 标准的 model_index.json 必须保留在 exp_dir 中，供 Diffusers from_pretrained() 使用
+    - 这里额外复制一份到 metadata 下，便于你查看和管理
+    """
+    src = os.path.join(exp_dir, "model_index.json")
+    dst = os.path.join(metadata_dir, "diffusers_pipeline_model_index.json")
+    if os.path.exists(src):
+        shutil.copyfile(src, dst)
+    return dst
 
-    return epoch_dir
 
 # =========================================================
 # 3. 数据集
 # =========================================================
 class MILK10kDDPMDataset(Dataset):
     """
-    基于你代码1的真实数据结构：
     - merge metadata 和 ground truth
     - 只保留 dermoscopic 图像
     - drop_duplicates(lesion_id)
@@ -290,28 +269,23 @@ class MILK10kDDPMDataset(Dataset):
 
         df = pd.merge(meta_df, gt_df, on="lesion_id", how="inner")
 
-        # 只保留 dermoscopic
         if "image_type" in df.columns:
             derm_mask = df["image_type"].astype(str).str.contains("dermoscopic", case=False, na=False)
             df = df[derm_mask].copy()
 
-        # 保持和代码1一致：每个 lesion_id 只保留一条
         df = df.drop_duplicates(subset=["lesion_id"], keep="first").reset_index(drop=True)
 
         self.class_columns = [c for c in gt_df.columns if c != "lesion_id"]
 
-        # 先统一生成整数标签
         if "label" in df.columns:
             df["label_int"] = df["label"].astype(int)
         else:
             df["label_int"] = df[self.class_columns].values.argmax(axis=1)
 
-        # single_label 模式：只取指定类别
         if data_mode == "single_label":
             if target_label is None:
                 raise ValueError("When data_mode='single_label', --target_label must be provided.")
 
-            # target_label 可以是类别名，也可以是数字字符串
             if str(target_label).isdigit():
                 target_label_idx = int(target_label)
                 if target_label_idx < 0 or target_label_idx >= len(self.class_columns):
@@ -357,7 +331,6 @@ class MILK10kDDPMDataset(Dataset):
         label = int(row["label_int"])
         sample_id = str(row["lesion_id"]) if "lesion_id" in row.index else str(idx)
 
-        # 返回风格尽量贴近 diffusion 常见写法
         return {
             "input": image,
             "label": label,
@@ -376,65 +349,66 @@ def tensor_to_uint8_for_fid(x):
     x = ((x.clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8)
     return x
 
+
 @torch.no_grad()
-def compute_fid_for_loader(
+def collect_real_uint8_images(real_loader, device, num_samples):
+    """
+    从 real_loader 中取出最多 num_samples 张真实图像，并转换成 FID 需要的 uint8 格式
+    """
+    real_batches = []
+    real_count = 0
+
+    for batch in real_loader:
+        real_images = batch["input"].to(device)
+        real_images_uint8 = tensor_to_uint8_for_fid(real_images)
+        real_batches.append(real_images_uint8)
+
+        real_count += real_images.size(0)
+        if real_count >= num_samples:
+            break
+
+    if len(real_batches) == 0:
+        return torch.empty(0, 3, 0, 0, dtype=torch.uint8, device=device), 0
+
+    real_images_all = torch.cat(real_batches, dim=0)[:num_samples]
+    return real_images_all, real_images_all.size(0)
+
+
+@torch.no_grad()
+def generate_fake_images_for_fid(
     accelerator,
     pipeline,
-    real_loader,
     num_gen_samples,
-    fid_save_dir,
+    fake_save_root,
     epoch,
-    split_name,
     num_inference_steps,
+    eval_batch_size,
     use_ddim_sampling=False,
     ddim_eta=0.0,
 ):
     """
-    计算某个数据划分上的 FID：
-    - real images 来自 real_loader
-    - fake images 由 pipeline 生成
-    - 使用 TorchMetrics 的 FID 实现
-
-    新增说明：
-    - 当 use_ddim_sampling=True 时，fake image 使用 DDIM 采样生成
-    - 训练部分不变，只改采样算法
+    统一生成一批 fake images，供 train FID 和 val FID 共用
     """
     device = accelerator.device
+    disable_pipeline_progress_bar(pipeline)
 
-    fid = FrechetInceptionDistance(feature=2048, normalize=False).to(device)
-
-    # -------------------------
-    # 1) 先喂真实图像
-    # -------------------------
-    real_count = 0
-    for batch in real_loader:
-        real_images = batch["input"].to(device)
-
-        # 把 [-1, 1] 的 tensor 转成 [0, 255] uint8
-        real_images_uint8 = tensor_to_uint8_for_fid(real_images)
-        fid.update(real_images_uint8, real=True)
-
-        real_count += real_images.size(0)
-        if real_count >= num_gen_samples:
-            break
-
-    real_count = min(real_count, num_gen_samples)
-
-    # -------------------------
-    # 2) 再生成相同数量的 fake 图像
-    # -------------------------
-    generated_dir = os.path.join(fid_save_dir, f"epoch_{epoch:03d}_{split_name}_generated")
+    generated_dir = os.path.join(fake_save_root, f"epoch_{epoch:03d}_shared_generated")
     os.makedirs(generated_dir, exist_ok=True)
 
+    fake_uint8_batches = []
     fake_count = 0
     batch_idx = 0
-    while fake_count < real_count:
-        cur_bs = min(real_loader.batch_size if real_loader.batch_size is not None else 16,
-                     real_count - fake_count)
 
+    progress_bar = tqdm(
+        total=num_gen_samples,
+        desc="FID generated images",
+        leave=True
+    )
+
+    while fake_count < num_gen_samples:
+        cur_bs = min(eval_batch_size, num_gen_samples - fake_count)
         generator = torch.Generator(device=device).manual_seed(1000 + epoch * 100 + batch_idx)
 
-        # DDIM 采样时需要传 eta
         if use_ddim_sampling:
             fake_pil_images = pipeline(
                 batch_size=cur_bs,
@@ -453,35 +427,36 @@ def compute_fid_for_loader(
 
         fake_tensors = []
         for i, img in enumerate(fake_pil_images):
-            # 保存生成图，方便后续人工检查
-            img.save(os.path.join(generated_dir, f"{split_name}_sample_{fake_count + i:05d}.png"))
+            global_idx = fake_count + i
+            img.save(os.path.join(generated_dir, f"fid_sample_{global_idx:05d}.png"))
 
-            arr = np.array(img).astype(np.uint8)      # HWC, uint8
-            ten = torch.from_numpy(arr).permute(2, 0, 1)  # CHW
+            arr = np.array(img).astype(np.uint8)
+            ten = torch.from_numpy(arr).permute(2, 0, 1)
             fake_tensors.append(ten)
 
         fake_tensors = torch.stack(fake_tensors, dim=0).to(device)
-        fid.update(fake_tensors, real=False)
+        fake_uint8_batches.append(fake_tensors)
 
         fake_count += cur_bs
         batch_idx += 1
+        progress_bar.update(cur_bs)
 
-    fid_value = fid.compute().item()
+    progress_bar.close()
 
-    fid_json_path = os.path.join(fid_save_dir, f"epoch_{epoch:03d}_{split_name}_fid.json")
-    save_json({
-        "epoch": epoch,
-        "split": split_name,
-        "num_real_images": int(real_count),
-        "num_fake_images": int(fake_count),
-        "fid": float(fid_value),
-        "generated_dir": generated_dir,
-        "sampler": "ddim" if use_ddim_sampling else "ddpm",
-        "num_inference_steps": int(num_inference_steps),
-        "ddim_eta": float(ddim_eta) if use_ddim_sampling else None,
-    }, fid_json_path)
+    fake_images_all = torch.cat(fake_uint8_batches, dim=0)
+    return fake_images_all, generated_dir
 
-    return float(fid_value), generated_dir, fid_json_path
+
+@torch.no_grad()
+def compute_fid_from_real_and_fake(real_images_uint8, fake_images_uint8, device):
+    """
+    使用已经准备好的 real / fake uint8 图像直接计算 FID
+    """
+    fid = FrechetInceptionDistance(feature=2048, normalize=False).to(device)
+    fid.update(real_images_uint8, real=True)
+    fid.update(fake_images_uint8[:real_images_uint8.size(0)], real=False)
+    return float(fid.compute().item())
+
 
 # =========================================================
 # 5. 主函数
@@ -514,7 +489,6 @@ def main(args):
 
     # -------------------------
     # 图像预处理
-    # diffusion 常用：[-1,1]
     # -------------------------
     image_transforms = transforms.Compose([
         transforms.Resize((args.resolution, args.resolution), interpolation=transforms.InterpolationMode.BILINEAR),
@@ -540,9 +514,6 @@ def main(args):
 
     print(f"Full filtered dataset size: {len(full_dataset)}")
 
-    # -------------------------
-    # 两种模式的数据划分:
-    # -------------------------
     if args.data_mode == "all":
         total_size = len(full_dataset)
         all_indices = np.arange(total_size)
@@ -567,10 +538,7 @@ def main(args):
         print_class_distribution("Validation Dataset Class Distribution", val_class_distribution)
 
     else:
-        # single_label 模式：不划分 train/val
         total_size = len(full_dataset)
-        all_indices = np.arange(total_size)
-
         train_dataset = full_dataset
         val_dataset = None
 
@@ -596,17 +564,15 @@ def main(args):
         drop_last=True,
     )
 
-    # FID 对 train split 的 real dataloader
     train_eval_loader = DataLoader(
         train_dataset,
         batch_size=args.eval_batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=args.dataloader_num_workers,
         pin_memory=pin_memory,
         drop_last=False,
     )
 
-    # FID 对 val split 的 real dataloader
     if val_dataset is not None:
         val_eval_loader = DataLoader(
             val_dataset,
@@ -670,6 +636,39 @@ def main(args):
         num_training_steps=max_train_steps,
     )
 
+    # -------------------------
+    # 断点继续训练相关状态
+    # -------------------------
+    start_epoch = 0
+    global_step = 0
+    best_val_fid = float("inf")
+    best_train_fid = float("inf")
+
+    # -------------------------
+    # 如果指定了 checkpoint，则从已有权重继续训练
+    # -------------------------
+    if args.resume_from_checkpoint is not None:
+        print(f"Loading checkpoint from: {args.resume_from_checkpoint}")
+        checkpoint = torch.load(args.resume_from_checkpoint, map_location="cpu")
+
+        # 恢复模型权重
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        # 恢复优化器和学习率调度器状态
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
+
+        # 恢复训练进度
+        start_epoch = checkpoint["epoch"]
+        global_step = checkpoint.get("global_step", 0)
+        best_val_fid = checkpoint.get("best_val_fid", float("inf"))
+        best_train_fid = checkpoint.get("best_train_fid", float("inf"))
+
+        print(f"Resume training from epoch {start_epoch + 1}")
+        print(f"Recovered global_step = {global_step}")
+        print(f"Recovered best_val_fid = {best_val_fid}")
+        print(f"Recovered best_train_fid = {best_train_fid}")
+
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler
     )
@@ -683,6 +682,7 @@ def main(args):
         "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "seed": args.seed,
         "mixed_precision": args.mixed_precision,
+        "resume_from_checkpoint": args.resume_from_checkpoint,
         "data": {
             "meta_csv_path": args.meta_csv_path,
             "gt_csv_path": args.gt_csv_path,
@@ -705,6 +705,8 @@ def main(args):
             "ddpm_num_steps": args.ddpm_num_steps,
             "ddpm_num_inference_steps": args.ddpm_num_inference_steps,
             "ddpm_beta_schedule": args.ddpm_beta_schedule,
+            "use_ddim_sampling": args.use_ddim_sampling,
+            "ddim_eta": args.ddim_eta,
         },
         "training": {
             "train_batch_size": args.train_batch_size,
@@ -712,6 +714,8 @@ def main(args):
             "num_epochs": args.num_epochs,
             "learning_rate": args.learning_rate,
             "gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "start_epoch": start_epoch,
+            "initial_global_step": global_step,
         },
         "paths": {
             "metrics_csv": metrics_csv_path,
@@ -720,7 +724,8 @@ def main(args):
             "checkpoints_dir": exp_folders["checkpoints_dir"],
             "samples_dir": exp_folders["samples_dir"],
             "fid_dir": exp_folders["fid_dir"],
-            "fid_generated_dir": exp_folders["fid_generated_dir"]
+            "fid_generated_dir": exp_folders["fid_generated_dir"],
+            "diffusers_model_index_copy": os.path.join(exp_folders["metadata_dir"], "diffusers_pipeline_model_index.json")
         },
         "best_result": {
             "best_epoch_by_val_fid": -1,
@@ -737,16 +742,12 @@ def main(args):
     # -------------------------
     # 训练
     # -------------------------
-    global_step = 0
-    best_val_fid = float("inf")
-    best_train_fid = float("inf")
-
-    for epoch in range(args.num_epochs):
+    for epoch in range(start_epoch, args.num_epochs):
         model.train()
         progress_bar = tqdm(
             total=num_update_steps_per_epoch,
             disable=not accelerator.is_local_main_process,
-            desc=f"Epoch {epoch + 1}/{args.num_epochs}"
+            desc=f"Train Epoch [{epoch + 1}/{args.num_epochs}]"
         )
 
         epoch_loss_sum = 0.0
@@ -754,7 +755,6 @@ def main(args):
 
         for step, batch in enumerate(train_dataloader):
             clean_images = batch["input"]
-
             noise = torch.randn_like(clean_images)
 
             timesteps = torch.randint(
@@ -779,7 +779,6 @@ def main(args):
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
-            # 记录训练损失
             loss_item = loss.detach().item()
             epoch_loss_sum += loss_item * clean_images.size(0)
             epoch_loss_count += clean_images.size(0)
@@ -789,7 +788,7 @@ def main(args):
                 global_step += 1
                 progress_bar.set_postfix({
                     "loss": f"{loss_item:.6f}",
-                    "step": global_step
+                    "update": global_step
                 })
 
         progress_bar.close()
@@ -808,82 +807,140 @@ def main(args):
         fid_val_value = None
         train_fid_json_path = ""
         val_fid_json_path = ""
-        train_generated_dir = ""
-        val_generated_dir = ""
+        shared_generated_dir = ""
         sample_dir = ""
+        diffusers_model_index_copy_path = ""
 
         if accelerator.is_main_process:
             unet = accelerator.unwrap_model(model)
 
-            # =====================================================
-            # 训练仍然使用 DDPMScheduler
-            # 但在“采样/生成图片/FID评估”阶段，可以切换为 DDIM
-            # =====================================================
             if args.use_ddim_sampling:
-                # 用训练时 DDPM scheduler 的配置来初始化 DDIM scheduler
-                # 这样 beta schedule、timesteps 等基础配置能保持一致
                 ddim_scheduler = DDIMScheduler.from_config(noise_scheduler.config)
-
-                # 使用 DDIMPipeline 进行采样
                 pipeline = DDIMPipeline(unet=unet, scheduler=ddim_scheduler)
             else:
-                # 不启用 DDIM 时，仍然使用原始 DDPMPipeline
                 pipeline = DDPMPipeline(unet=unet, scheduler=noise_scheduler)
 
             pipeline = pipeline.to(accelerator.device)
 
             # 1) 保存可视化样本
             if need_save_images:
-                sample_dir = save_sample_images(
-                    pipeline=pipeline,
-                    device=accelerator.device,
-                    save_dir=exp_folders["samples_dir"],
-                    epoch=epoch + 1,
-                    eval_batch_size=args.eval_batch_size,
-                    num_inference_steps=args.ddpm_num_inference_steps,
-                    use_ddim_sampling=args.use_ddim_sampling,
-                    ddim_eta=args.ddim_eta,
+                disable_pipeline_progress_bar(pipeline)
+
+                epoch_dir = os.path.join(exp_folders["samples_dir"], f"epoch_{epoch + 1:03d}")
+                os.makedirs(epoch_dir, exist_ok=True)
+
+                generator = torch.Generator(device=accelerator.device).manual_seed(0)
+                sample_progress_bar = tqdm(
+                    total=args.eval_batch_size,
+                    desc="Generating samples",
+                    leave=True
                 )
-                print(f"Sample images saved to: {sample_dir}")
 
-            # 2) 计算 FID：train 和 val 都算
+                if args.use_ddim_sampling:
+                    images = pipeline(
+                        batch_size=args.eval_batch_size,
+                        generator=generator,
+                        num_inference_steps=args.ddpm_num_inference_steps,
+                        eta=args.ddim_eta,
+                        output_type="pil",
+                    ).images
+                else:
+                    images = pipeline(
+                        batch_size=args.eval_batch_size,
+                        generator=generator,
+                        num_inference_steps=args.ddpm_num_inference_steps,
+                        output_type="pil",
+                    ).images
+
+                for i, image in enumerate(images):
+                    image.save(os.path.join(epoch_dir, f"sample_{i:03d}.png"))
+                    sample_progress_bar.update(1)
+
+                sample_progress_bar.close()
+                sample_dir = epoch_dir
+                print(f"Samples saved to: {sample_dir}")
+
+            # 2) 计算 FID：先统一生成一批 fake，再分别算 train / val
             if need_eval:
-                print(f"Running FID evaluation at epoch {epoch + 1} ...")
+                print(f"\nEpoch {epoch + 1}/{args.num_epochs}")
+                print("-" * 60)
 
-                fid_train_value, train_generated_dir, train_fid_json_path = compute_fid_for_loader(
+                target_fake_count = args.num_fid_samples_train
+                if val_eval_loader is not None:
+                    target_fake_count = max(args.num_fid_samples_train, args.num_fid_samples_val)
+
+                fake_images_uint8, shared_generated_dir = generate_fake_images_for_fid(
                     accelerator=accelerator,
                     pipeline=pipeline,
-                    real_loader=train_eval_loader,
-                    num_gen_samples=args.num_fid_samples_train,
-                    fid_save_dir=exp_folders["fid_dir"],
+                    num_gen_samples=target_fake_count,
+                    fake_save_root=exp_folders["fid_generated_dir"],
                     epoch=epoch + 1,
-                    split_name="train",
                     num_inference_steps=args.ddpm_num_inference_steps,
+                    eval_batch_size=args.eval_batch_size,
                     use_ddim_sampling=args.use_ddim_sampling,
                     ddim_eta=args.ddim_eta,
                 )
+
+                train_real_uint8, train_real_count = collect_real_uint8_images(
+                    real_loader=train_eval_loader,
+                    device=accelerator.device,
+                    num_samples=args.num_fid_samples_train,
+                )
+
+                fid_train_value = compute_fid_from_real_and_fake(
+                    real_images_uint8=train_real_uint8,
+                    fake_images_uint8=fake_images_uint8,
+                    device=accelerator.device,
+                )
+
+                train_fid_json_path = os.path.join(exp_folders["fid_dir"], f"epoch_{epoch + 1:03d}_train_fid.json")
+                save_json({
+                    "epoch": epoch + 1,
+                    "split": "train",
+                    "num_real_images": int(train_real_count),
+                    "num_fake_images": int(train_real_count),
+                    "fid": float(fid_train_value),
+                    "generated_dir": shared_generated_dir,
+                    "sampler": "ddim" if args.use_ddim_sampling else "ddpm",
+                    "num_inference_steps": int(args.ddpm_num_inference_steps),
+                    "ddim_eta": float(args.ddim_eta) if args.use_ddim_sampling else None,
+                    "shared_fake_images": True,
+                }, train_fid_json_path)
 
                 print(f"Train FID: {fid_train_value:.6f}")
 
                 if val_eval_loader is not None:
-                    fid_val_value, val_generated_dir, val_fid_json_path = compute_fid_for_loader(
-                        accelerator=accelerator,
-                        pipeline=pipeline,
+                    val_real_uint8, val_real_count = collect_real_uint8_images(
                         real_loader=val_eval_loader,
-                        num_gen_samples=args.num_fid_samples_val,
-                        fid_save_dir=exp_folders["fid_dir"],
-                        epoch=epoch + 1,
-                        split_name="val",
-                        num_inference_steps=args.ddpm_num_inference_steps,
-                        use_ddim_sampling=args.use_ddim_sampling,
-                        ddim_eta=args.ddim_eta,
+                        device=accelerator.device,
+                        num_samples=args.num_fid_samples_val,
                     )
+
+                    fid_val_value = compute_fid_from_real_and_fake(
+                        real_images_uint8=val_real_uint8,
+                        fake_images_uint8=fake_images_uint8,
+                        device=accelerator.device,
+                    )
+
+                    val_fid_json_path = os.path.join(exp_folders["fid_dir"], f"epoch_{epoch + 1:03d}_val_fid.json")
+                    save_json({
+                        "epoch": epoch + 1,
+                        "split": "val",
+                        "num_real_images": int(val_real_count),
+                        "num_fake_images": int(val_real_count),
+                        "fid": float(fid_val_value),
+                        "generated_dir": shared_generated_dir,
+                        "sampler": "ddim" if args.use_ddim_sampling else "ddpm",
+                        "num_inference_steps": int(args.ddpm_num_inference_steps),
+                        "ddim_eta": float(args.ddim_eta) if args.use_ddim_sampling else None,
+                        "shared_fake_images": True,
+                    }, val_fid_json_path)
+
                     print(f"Val FID: {fid_val_value:.6f}")
                 else:
-                    print("Val FID skipped because current mode has no validation split.")
+                    print("Val FID skipped (no validation split).")
 
             # 3) 保存模型
-            # best 模型优先按 val_fid 选；如果没有 val，则按 train_fid
             is_best = False
             if fid_val_value is not None:
                 if fid_val_value < best_val_fid:
@@ -913,13 +970,24 @@ def main(args):
                 if is_best:
                     experiment_metadata["best_result"]["best_model_path"] = best_model_path
 
-                # 也保存 diffusers 格式，方便后面直接 pipeline.from_pretrained
+                # 保存 diffusers 格式，供后续 from_pretrained 使用
                 pipeline.save_pretrained(exp_folders["exp_dir"])
+
+                # 额外复制一份更明确命名的 model_index.json 到 metadata 文件夹
+                diffusers_model_index_copy_path = save_diffusers_model_index_copy(
+                    exp_dir=exp_folders["exp_dir"],
+                    metadata_dir=exp_folders["metadata_dir"]
+                )
+
+                print(f"Checkpoint saved to: {os.path.join(exp_folders['checkpoints_dir'], 'last.pth.tar')}")
+                print(f"Diffusers model index copy saved to: {diffusers_model_index_copy_path}")
+                if is_best:
+                    print("New best model saved.")
 
         accelerator.wait_for_everyone()
 
         # -------------------------
-        # 每个评估 epoch 记录信息（不记录 lr）
+        # 每个评估 epoch 记录信息
         # -------------------------
         if accelerator.is_main_process and need_eval:
             epoch_row = {
@@ -930,15 +998,18 @@ def main(args):
                 "sample_dir": sample_dir,
                 "train_fid_json_path": train_fid_json_path,
                 "val_fid_json_path": val_fid_json_path,
-                "train_generated_dir": train_generated_dir,
-                "val_generated_dir": val_generated_dir,
-                "checkpoint_path": os.path.join(exp_folders["checkpoints_dir"], "last.pth.tar")
+                "shared_fid_generated_dir": shared_generated_dir,
+                "checkpoint_path": os.path.join(exp_folders["checkpoints_dir"], "last.pth.tar"),
+                "diffusers_model_index_copy_path": diffusers_model_index_copy_path
             }
             update_epoch_metrics_csv(metrics_csv_path, epoch_row)
             update_epoch_metrics_json(metrics_json_path, epoch_row)
 
             experiment_metadata["last_epoch_finished"] = epoch + 1
             experiment_metadata["updated_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            experiment_metadata["paths"]["diffusers_model_index_copy"] = os.path.join(
+                exp_folders["metadata_dir"], "diffusers_pipeline_model_index.json"
+            )
             save_json(experiment_metadata, metadata_json_path)
 
     accelerator.end_training()
