@@ -9,7 +9,7 @@
 # 执行代码
 python classifier.py --epochs 30
 
-python diffusion.py --data_mode all --use_ddim_sampling --ddpm_num_inference_steps 250 --resolution 224 --num_fid_samples_train 1024 --num_fid_samples_val 0 --mixed_precision fp16
+python diffusion.py --use_ddim_sampling --ddpm_num_inference_steps 100 --resolution 128 --num_fid_samples_train 1024 --num_fid_samples_val 0 --mixed_precision fp16 --num_epochs 80
 
 
 # git代码
@@ -38,3 +38,7 @@ diffusion.py使用了DDIM加速采样
 
 ## version 2.0
 数据集修改成ISIC2018
+
+## version 2.1
+优化了classifier.py和diffusion.py的代码逻辑。
+使用了更完善的评价指标

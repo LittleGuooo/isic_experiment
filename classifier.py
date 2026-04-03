@@ -43,6 +43,7 @@ from sklearn.preprocessing import label_binarize
 from sklearn.model_selection import train_test_split
 
 import matplotlib.pyplot as plt
+from tqdm.auto import tqdm  # 新增：使用 tqdm 改善训练/验证进度条
 
 # =========================================================
 # 1. 支持的模型名称
@@ -63,8 +64,6 @@ parser.add_argument('--workers', default=4, type=int,
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=20, type=int,
                     help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int,
-                    help='manual epoch number (useful on restarts)')
 parser.add_argument('--batch-size', default=128, type=int,
                     help='mini-batch size (default: 128)')
 parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
@@ -74,8 +73,8 @@ parser.add_argument('--momentum', default=0.9, type=float,
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay', help='weight decay (default: 1e-4)')
 parser.add_argument('--print-freq', default=10, type=int,
-                    help='print frequency (保留参数，但这里主要使用单行进度条)')
-parser.add_argument('--resume', default='None', type=str,
+                    help='print frequency (保留参数，但这里主要使用 tqdm 进度条)')
+parser.add_argument('--resume', default=None, type=str,
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--evaluate', action='store_true',
                     help='evaluate model on validation set only')
@@ -151,6 +150,37 @@ def setup_experiment_folders(base_dir, exp_name):
     创建规范实验目录
     """
     exp_dir = os.path.join(base_dir, exp_name)
+    checkpoints_dir = os.path.join(exp_dir, "checkpoints")
+    metrics_dir = os.path.join(exp_dir, "metrics")
+    metadata_dir = os.path.join(exp_dir, "metadata")
+    roc_dir = os.path.join(exp_dir, "roc_curves")
+    cm_dir = os.path.join(exp_dir, "confusion_matrices")
+    predictions_dir = os.path.join(exp_dir, "predictions")
+
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    os.makedirs(metrics_dir, exist_ok=True)
+    os.makedirs(metadata_dir, exist_ok=True)
+    os.makedirs(roc_dir, exist_ok=True)
+    os.makedirs(cm_dir, exist_ok=True)
+    os.makedirs(predictions_dir, exist_ok=True)
+
+    return {
+        "exp_dir": exp_dir,
+        "checkpoints_dir": checkpoints_dir,
+        "metrics_dir": metrics_dir,
+        "metadata_dir": metadata_dir,
+        "roc_dir": roc_dir,
+        "cm_dir": cm_dir,
+        "predictions_dir": predictions_dir
+    }
+
+
+def reuse_experiment_folders(exp_dir):
+    """
+    复用已有实验目录
+    这个函数专门给 resume 场景使用：
+    checkpoint 中会保存 exp_dir，这里直接根据旧目录恢复所有子目录路径
+    """
     checkpoints_dir = os.path.join(exp_dir, "checkpoints")
     metrics_dir = os.path.join(exp_dir, "metrics")
     metadata_dir = os.path.join(exp_dir, "metadata")
@@ -397,6 +427,7 @@ def format_progress_bar(current, total, prefix="", width=30):
 def print_single_line_progress(current, total, prefix, extra_info):
     """
     单行更新进度，避免输出一堆乱日志
+    说明：保留这个函数，但主流程已改为 tqdm，不再使用
     """
     line = f"\r{format_progress_bar(current, total, prefix=prefix)} | {extra_info}"
     print(line, end="", flush=True)
@@ -654,10 +685,30 @@ def main():
     val_img_dir = r'dataset\ISIC2018_Task3_Validation_Input'
 
     # -----------------------------
-    # 创建实验目录
+    # 先准备 start_epoch / checkpoint 变量
+    # 注意：删除了 --start-epoch 参数后，训练起点完全由 checkpoint 决定
     # -----------------------------
-    exp_name = make_experiment_name(args)
-    exp_folders = setup_experiment_folders(base_dir="experiments", exp_name=exp_name)
+    start_epoch = 0
+    best_epoch = -1
+    checkpoint = None
+
+    # -----------------------------
+    # 创建或复用实验目录
+    # resume 时：优先复用 checkpoint 里记录的旧实验目录
+    # -----------------------------
+    if args.resume is not None and os.path.isfile(args.resume):
+        print(f"=> loading checkpoint metadata from '{args.resume}' to recover experiment folder")
+        checkpoint = torch.load(args.resume, map_location=device)
+
+        if 'exp_dir' not in checkpoint:
+            raise ValueError("resume 的 checkpoint 中没有 'exp_dir'，无法复用旧实验目录。")
+
+        exp_folders = reuse_experiment_folders(checkpoint['exp_dir'])
+        exp_name = os.path.basename(checkpoint['exp_dir'])
+        print(f"=> reusing experiment folder: {exp_folders['exp_dir']}")
+    else:
+        exp_name = make_experiment_name(args)
+        exp_folders = setup_experiment_folders(base_dir="experiments", exp_name=exp_name)
 
     metrics_csv_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.csv")
     metrics_json_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.json")
@@ -707,28 +758,30 @@ def main():
 
     # -----------------------------
     # 断点恢复
+    # 删除了 start-epoch 参数后，这里由 checkpoint 自动恢复 start_epoch
     # -----------------------------
-    best_epoch = -1
     best_model_path = os.path.join(exp_folders["checkpoints_dir"], "model_best.pth.tar")
 
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print(f"=> loading checkpoint '{args.resume}'")
-            checkpoint = torch.load(args.resume, map_location=device)
+    if checkpoint is not None:
+        print(f"=> loading checkpoint state from '{args.resume}'")
 
-            args.start_epoch = checkpoint['epoch']
-            best_acc1 = checkpoint['best_acc1']
+        # checkpoint 里的 epoch 表示“已经完成到哪一轮”
+        # 所以下一轮训练应该从这个 epoch 开始继续
+        start_epoch = checkpoint['epoch']
+        best_acc1 = checkpoint['best_acc1']
 
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
+        model.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
 
-            if 'best_epoch' in checkpoint:
-                best_epoch = checkpoint['best_epoch']
+        if 'best_epoch' in checkpoint:
+            best_epoch = checkpoint['best_epoch']
 
-            print(f"=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
-        else:
-            print(f"=> no checkpoint found at '{args.resume}'")
+        print(f"=> loaded checkpoint '{args.resume}' (finished epoch {checkpoint['epoch']})")
+        print(f"=> training will continue from epoch {start_epoch + 1}")
+
+    elif args.resume is not None:
+        print(f"=> no checkpoint found at '{args.resume}'")
 
     # =====================================================
     # 数据加载部分
@@ -791,6 +844,7 @@ def main():
 
     # -----------------------------
     # 初始化实验元信息
+    # resume 时会写回原实验目录中的 metadata
     # -----------------------------
     experiment_metadata = {
         "experiment_name": exp_name,
@@ -803,7 +857,6 @@ def main():
         "weight_decay": args.weight_decay,
         "batch_size": args.batch_size,
         "epochs": args.epochs,
-        "start_epoch": args.start_epoch,
         "seed": args.seed,
         "device": str(device),
         "data": {
@@ -831,6 +884,10 @@ def main():
             "confusion_matrix_dir": exp_folders["cm_dir"],
             "predictions_dir": exp_folders["predictions_dir"]
         },
+        "resume": {
+            "resume_path": args.resume,
+            "start_epoch": start_epoch
+        },
         "best_result": {
             "best_epoch": best_epoch,
             "best_val_balanced_acc": float(best_acc1),
@@ -841,8 +898,13 @@ def main():
 
     # -----------------------------
     # 仅评估模式
+    # 删除 start-epoch 参数后：
+    # 如果是 resume + evaluate，则使用 checkpoint 恢复到的 start_epoch 作为评估标记轮次
+    # 否则默认 epoch=0
     # -----------------------------
     if args.evaluate:
+        eval_epoch = start_epoch if checkpoint is not None else 0
+
         val_metrics = validate(
             val_loader=val_loader,
             model=model,
@@ -851,7 +913,7 @@ def main():
             args=args,
             num_classes=num_classes,
             class_names=class_names,
-            epoch=args.start_epoch,
+            epoch=eval_epoch,
             roc_dir=exp_folders["roc_dir"],
             cm_dir=exp_folders["cm_dir"],
             predictions_dir=exp_folders["predictions_dir"],
@@ -859,7 +921,7 @@ def main():
         )
 
         eval_row = {
-            "epoch": args.start_epoch,
+            "epoch": eval_epoch,
             "lr": float(optimizer.param_groups[0]["lr"]),
             "train_loss": None,
             "train_acc": None,
@@ -889,8 +951,9 @@ def main():
 
     # -----------------------------
     # 训练循环
+    # 训练起点改为 start_epoch（由 checkpoint 自动恢复）
     # -----------------------------
-    for epoch in range(args.start_epoch, args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print(f"\n{'=' * 25} Epoch {epoch + 1}/{args.epochs} {'=' * 25}")
 
         train_metrics = train(train_loader, model, criterion, optimizer, epoch, device, args)
@@ -926,7 +989,8 @@ def main():
             'best_acc1': best_acc1,
             'best_epoch': best_epoch,
             'optimizer': optimizer.state_dict(),
-            'scheduler': scheduler.state_dict()
+            'scheduler': scheduler.state_dict(),
+            'exp_dir': exp_folders["exp_dir"]  # 新增：保存实验目录，供 resume 时复用
         }, is_best, save_dir=exp_folders["checkpoints_dir"], filename='last.pth.tar')
 
         # 每轮指标保存（保存汇总指标）
@@ -996,7 +1060,18 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
 
     model.train()
 
-    for i, (images, target, sample_ids) in enumerate(train_loader):
+    # 使用 tqdm 包装 dataloader
+    # desc：左侧显示当前阶段
+    # total：总 batch 数
+    # leave=False：一个 epoch 结束后不保留整条进度条，日志更干净
+    progress_bar = tqdm(
+        train_loader,
+        total=len(train_loader),
+        desc=f"Train Epoch {epoch + 1}",
+        leave=False
+    )
+
+    for i, (images, target, sample_ids) in enumerate(progress_bar):
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
@@ -1012,13 +1087,11 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
         loss.backward()
         optimizer.step()
 
-        # 单行进度条输出
-        print_single_line_progress(
-            current=i + 1,
-            total=len(train_loader),
-            prefix=f"Train Epoch {epoch + 1}",
-            extra_info=f"loss={losses.avg:.4f} acc={top1.avg:.2f}%"
-        )
+        # 在 tqdm 右侧动态显示平均 loss / acc
+        progress_bar.set_postfix({
+            "loss": f"{losses.avg:.4f}",
+            "acc": f"{top1.avg:.2f}%"
+        })
 
     return {
         "train_loss": float(losses.avg),
@@ -1043,7 +1116,14 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
     all_sample_ids = []
 
     with torch.no_grad():
-        for i, (images, target, sample_ids) in enumerate(val_loader):
+        progress_bar = tqdm(
+            val_loader,
+            total=len(val_loader),
+            desc=f"Validate {epoch}",
+            leave=False
+        )
+
+        for i, (images, target, sample_ids) in enumerate(progress_bar):
             images = images.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
 
@@ -1063,13 +1143,11 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
             losses.update(loss.item(), images.size(0))
             top1.update(acc1.item(), images.size(0))
 
-            # 单行进度条输出
-            print_single_line_progress(
-                current=i + 1,
-                total=len(val_loader),
-                prefix=f"Validate {epoch}",
-                extra_info=f"loss={losses.avg:.4f} acc={top1.avg:.2f}%"
-            )
+            # 在 tqdm 右侧动态显示平均 loss / acc
+            progress_bar.set_postfix({
+                "loss": f"{losses.avg:.4f}",
+                "acc": f"{top1.avg:.2f}%"
+            })
 
     all_targets = np.concatenate(all_targets, axis=0)
     all_preds = np.concatenate(all_preds, axis=0)
