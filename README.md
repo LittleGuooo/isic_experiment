@@ -7,9 +7,21 @@
 - `test.Ipynb`、`day1.py` 等：你的代码和实验脚本。
 
 # 执行代码
-python main.py --pretrained
+python classifier.py --epochs 30
 
 python diffusion.py --data_mode all --use_ddim_sampling --ddpm_num_inference_steps 250 --resolution 224 --num_fid_samples_train 1024 --num_fid_samples_val 0 --mixed_precision fp16
+
+
+# git代码
+git checkout --orphan clean_branch
+git status
+git rm -r --cached .
+git add .
+git commit -m "clean project (no large files)"
+git push -u origin clean_branch
+
+git count-objects -vH
+git rev-list --objects --all | git cat-file --batch-check="%(objecttype) %(objectname) %(objectsize) %(rest)" | sort -k3 -n | tail -20
 
 # 更新说明
 ## version 1.0
@@ -23,3 +35,6 @@ diffusion.py使用了DDIM加速采样
 
 ## version 1.3
 加入实验结果和数据集
+
+## version 2.0
+数据集修改成ISIC2018

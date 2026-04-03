@@ -2,14 +2,17 @@
 __pycache__/
 *.pyc
 
-# 模型权重
-checkpoints/
-pretrained_models/
-
 # 格式
 *.jpg
 *.png
 *.zip
 *.tar.gz
 *.pth.tar
+*.safetensors
+*.log
+
+# 文件夹
+dataset/
+checkpoints/
+pretrained_models/
 

@@ -5,7 +5,7 @@ import shutil
 import time
 import warnings
 from enum import Enum
-from collections import Counter  # 新增：用于统计每个类别的样本数
+from collections import Counter
 
 import pandas as pd
 from PIL import Image
@@ -34,7 +34,10 @@ from sklearn.metrics import (
     classification_report,
     roc_curve,
     auc,
-    ConfusionMatrixDisplay
+    ConfusionMatrixDisplay,
+    average_precision_score,
+    balanced_accuracy_score,
+    precision_score
 )
 from sklearn.preprocessing import label_binarize
 from sklearn.model_selection import train_test_split
@@ -53,7 +56,7 @@ model_names = sorted(
 # =========================================================
 # 2. 命令行参数
 # =========================================================
-parser = argparse.ArgumentParser(description='PyTorch ResNet50 Training for MILK10k')
+parser = argparse.ArgumentParser(description='PyTorch ResNet50 Training for ISIC2018 Task3')
 parser.add_argument('--arch', default='resnet50', choices=model_names,
                     help='model architecture (default: resnet50)')
 parser.add_argument('--workers', default=4, type=int,
@@ -71,13 +74,13 @@ parser.add_argument('--momentum', default=0.9, type=float,
 parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay', help='weight decay (default: 1e-4)')
 parser.add_argument('--print-freq', default=10, type=int,
-                    help='print frequency (default: 10)')
-parser.add_argument('--resume', default='', type=str,
+                    help='print frequency (保留参数，但这里主要使用单行进度条)')
+parser.add_argument('--resume', default='None', type=str,
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--evaluate', action='store_true',
                     help='evaluate model on validation set only')
-parser.add_argument('--pretrained', action='store_true',
-                    help='use ImageNet pretrained model')
+parser.add_argument('--weights', default=None, type=str,
+                    help='pretrained weights name, e.g. DEFAULT / IMAGENET1K_V1 / IMAGENET1K_V2')
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training')
 parser.add_argument('--gpu', default=0, type=int,
@@ -90,30 +93,21 @@ best_acc1 = 0.0
 # 3. 数据集定义
 # =========================================================
 class ISICResNetDataset(Dataset):
-    def __init__(self, meta_csv_path, gt_csv_path, img_dir, transform=None):
+    def __init__(self, gt_csv_path, img_dir, transform=None):
         """
-        初始化 ISIC / MILK10k 单模态分类数据集
+        初始化 ISIC2018 Task3 单模态分类数据集
+        图片平铺在一个目录中，CSV 第一列为 image，后面是 7 个 one-hot / confidence 类别列
         """
         self.img_dir = img_dir
         self.transform = transform
 
-        meta_df = pd.read_csv(meta_csv_path)
-        gt_df = pd.read_csv(gt_csv_path)
+        df = pd.read_csv(gt_csv_path)
 
-        df = pd.merge(meta_df, gt_df, on='lesion_id', how='inner')
+        self.class_columns = [c for c in df.columns if c != 'image']
+        self.df = df.reset_index(drop=True)
 
-        if 'image_type' in df.columns:
-            derm_mask = df['image_type'].str.contains('dermoscopic', case=False, na=False)
-            df = df[derm_mask].copy()
-
-        self.df = df.drop_duplicates(subset=['lesion_id'], keep='first').reset_index(drop=True)
-        self.class_columns = [c for c in gt_df.columns if c != 'lesion_id']
-
-        # 提前把每个样本的整数标签算好，后面做分层划分会用到
-        if 'label' in self.df.columns:
-            self.labels = self.df['label'].astype(int).tolist()
-        else:
-            self.labels = self.df[self.class_columns].values.argmax(axis=1).tolist()
+        # 提前计算整数标签，后面统计类别分布会用到
+        self.labels = self.df[self.class_columns].values.argmax(axis=1).tolist()
 
     def __len__(self):
         return len(self.df)
@@ -121,37 +115,19 @@ class ISICResNetDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
 
-        img_id_col = 'isic_id' if 'isic_id' in row.index else ('image_id' if 'image_id' in row.index else None)
-        if img_id_col is None:
-            raise KeyError("无法在 CSV 中找到 'isic_id' 或 'image_id' 列。")
-
-        lesion_id = str(row['lesion_id']) if 'lesion_id' in row.index else None
-        img_name = f"{row[img_id_col]}.jpg"
-
-        if lesion_id:
-            img_path = os.path.join(self.img_dir, lesion_id, img_name)
-        else:
-            img_path = os.path.join(self.img_dir, img_name)
-
-        if not os.path.exists(img_path):
-            raise FileNotFoundError(f"找不到图片: {img_path}")
+        image_id = str(row['image'])
+        img_name = f"{image_id}.jpg"
+        img_path = os.path.join(self.img_dir, img_name)
 
         image = Image.open(img_path).convert('RGB')
 
         if self.transform is not None:
             image = self.transform(image)
 
-        if 'label' in row.index:
-            label = torch.tensor(int(row['label']), dtype=torch.long)
-        else:
-            if all(c in row.index for c in self.class_columns):
-                label_array = row[self.class_columns].values.astype(float)
-                label = torch.tensor(label_array.argmax(), dtype=torch.long)
-            else:
-                raise KeyError("无法提取标签：既没有 'label' 列，也没有 one-hot 类别列。")
+        label_array = row[self.class_columns].values.astype(float)
+        label = torch.tensor(label_array.argmax(), dtype=torch.long)
 
-        # 这里返回的 sample_id 就作为后续保存 CSV 时的 case_id
-        sample_id = str(row['lesion_id']) if 'lesion_id' in row.index else str(idx)
+        sample_id = image_id
 
         return image, label, sample_id
 
@@ -164,9 +140,9 @@ def make_experiment_name(args):
     生成规范实验名
     """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    pretrained_tag = "pretrained" if args.pretrained else "scratch"
+    weights_tag = args.weights if args.weights is not None else "scratch"
     seed_tag = f"seed{args.seed}" if args.seed is not None else "seedNone"
-    exp_name = f"{timestamp}_{args.arch}_{pretrained_tag}_lr{args.lr}_bs{args.batch_size}_{seed_tag}"
+    exp_name = f"{timestamp}_{args.arch}_{weights_tag}_lr{args.lr}_bs{args.batch_size}_{seed_tag}"
     return exp_name
 
 
@@ -180,7 +156,7 @@ def setup_experiment_folders(base_dir, exp_name):
     metadata_dir = os.path.join(exp_dir, "metadata")
     roc_dir = os.path.join(exp_dir, "roc_curves")
     cm_dir = os.path.join(exp_dir, "confusion_matrices")
-    predictions_dir = os.path.join(exp_dir, "predictions")  # 新增：样本级预测保存目录
+    predictions_dir = os.path.join(exp_dir, "predictions")
 
     os.makedirs(checkpoints_dir, exist_ok=True)
     os.makedirs(metrics_dir, exist_ok=True)
@@ -210,7 +186,7 @@ def save_json(data, json_path):
 
 def update_epoch_metrics_csv(metrics_csv_path, row_dict):
     """
-    追加保存每轮指标到 CSV
+    追加保存每轮汇总指标到 CSV
     """
     row_df = pd.DataFrame([row_dict])
     if os.path.exists(metrics_csv_path):
@@ -223,7 +199,7 @@ def update_epoch_metrics_csv(metrics_csv_path, row_dict):
 
 def update_epoch_metrics_json(metrics_json_path, row_dict):
     """
-    追加保存每轮指标到 JSON
+    追加保存每轮汇总指标到 JSON
     """
     if os.path.exists(metrics_json_path):
         with open(metrics_json_path, "r", encoding="utf-8") as f:
@@ -235,6 +211,15 @@ def update_epoch_metrics_json(metrics_json_path, row_dict):
 
     with open(metrics_json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+
+def save_detailed_metrics_json(detailed_metrics, save_dir, epoch):
+    """
+    保存每个 epoch 的详细指标（包括 per-class 指标）
+    """
+    json_path = os.path.join(save_dir, f"epoch_{epoch:03d}_detailed_metrics.json")
+    save_json(detailed_metrics, json_path)
+    return json_path
 
 
 def save_confusion_matrix_artifacts(y_true, y_pred, class_names, save_dir, epoch):
@@ -287,7 +272,6 @@ def save_multiclass_roc_artifacts(y_true, y_prob, class_names, save_dir, epoch):
 
         unique_vals = np.unique(y_true_i)
         if len(unique_vals) < 2:
-            print(f"[Warning] Epoch {epoch}: 类别 '{class_name}' 在当前验证集缺少正样本或负样本，跳过该类 ROC。")
             continue
 
         fpr, tpr, _ = roc_curve(y_true_i, y_prob_i)
@@ -352,13 +336,11 @@ def save_multiclass_roc_artifacts(y_true, y_prob, class_names, save_dir, epoch):
     return roc_png_path, roc_json_path
 
 
-def save_val_predictions_csv(sample_ids, y_true, y_pred, y_prob, save_dir, epoch):
+def save_val_predictions_csv(sample_ids, y_true, y_pred, y_prob, class_names, save_dir, epoch):
     """
     保存样本级验证预测结果
-    文件名格式：
-    val_predictions_epoch_XX.csv
     每个样本一行：
-    case_id, y_true, y_pred, prob_0, prob_1, ...
+    case_id, y_true, y_pred, prob_MEL, prob_NV, ...
     """
     data = {
         "case_id": list(sample_ids),
@@ -368,7 +350,7 @@ def save_val_predictions_csv(sample_ids, y_true, y_pred, y_prob, save_dir, epoch
 
     num_classes = y_prob.shape[1]
     for i in range(num_classes):
-        data[f"prob_{i}"] = y_prob[:, i].tolist()
+        data[f"prob_{class_names[i]}"] = y_prob[:, i].tolist()
 
     pred_df = pd.DataFrame(data)
     pred_csv_path = os.path.join(save_dir, f"val_predictions_epoch_{epoch:02d}.csv")
@@ -376,26 +358,20 @@ def save_val_predictions_csv(sample_ids, y_true, y_pred, y_prob, save_dir, epoch
     return pred_csv_path
 
 
-def count_labels_from_indices(labels, indices, class_names):
+def count_labels_from_dataset(labels, class_names):
     """
-    根据给定下标统计每个类别的样本数量
-    labels: 完整数据集的整数标签列表
-    indices: 要统计的样本下标列表
-    class_names: 类别名列表
+    统计一个数据集里各类别样本数
     """
-    counter = Counter([labels[i] for i in indices])
-
-    # 按类别顺序生成一个更清晰的字典，方便打印和保存到 metadata
+    counter = Counter(labels)
     count_dict = {}
     for class_idx, class_name in enumerate(class_names):
         count_dict[class_name] = int(counter.get(class_idx, 0))
-
     return count_dict
 
 
 def print_class_distribution(title, count_dict):
     """
-    把类别统计结果打印出来
+    打印类别统计结果
     """
     print(f"\n{'=' * 60}")
     print(title)
@@ -406,6 +382,231 @@ def print_class_distribution(title, count_dict):
         total_count += count
     print(f"Total: {total_count}")
     print(f"{'=' * 60}\n")
+
+
+def format_progress_bar(current, total, prefix="", width=30):
+    """
+    生成简单单行进度条
+    """
+    ratio = current / total
+    filled = int(width * ratio)
+    bar = "=" * filled + "." * (width - filled)
+    return f"{prefix} [{bar}] {current}/{total}"
+
+
+def print_single_line_progress(current, total, prefix, extra_info):
+    """
+    单行更新进度，避免输出一堆乱日志
+    """
+    line = f"\r{format_progress_bar(current, total, prefix=prefix)} | {extra_info}"
+    print(line, end="", flush=True)
+    if current == total:
+        print("")
+
+
+def safe_div(a, b):
+    """
+    安全除法，避免 0 除错误
+    """
+    return float(a) / float(b) if b != 0 else float("nan")
+
+
+def compute_auc80(y_true_binary, y_score, sensitivity_low=0.8):
+    """
+    计算 Melanoma 专用 AUC80：
+    只积分 sensitivity(TPR) 在 [0.8, 1.0] 区间上的 ROC 面积
+
+    这里返回“原始部分 ROC 面积”，不做额外归一化。
+    """
+    unique_vals = np.unique(y_true_binary)
+    if len(unique_vals) < 2:
+        return float("nan")
+
+    fpr, tpr, _ = roc_curve(y_true_binary, y_score)
+
+    # 选出 TPR >= 0.8 的部分
+    keep_idx = np.where(tpr >= sensitivity_low)[0]
+    if len(keep_idx) == 0:
+        return 0.0
+
+    start_idx = keep_idx[0]
+
+    # 如果第一个满足条件的点不是刚好 0.8，则插值补一个边界点
+    if tpr[start_idx] > sensitivity_low and start_idx > 0:
+        x0, y0 = fpr[start_idx - 1], tpr[start_idx - 1]
+        x1, y1 = fpr[start_idx], tpr[start_idx]
+        if y1 != y0:
+            interp_fpr = x0 + (sensitivity_low - y0) * (x1 - x0) / (y1 - y0)
+        else:
+            interp_fpr = x1
+
+        fpr_part = np.concatenate([[interp_fpr], fpr[start_idx:]])
+        tpr_part = np.concatenate([[sensitivity_low], tpr[start_idx:]])
+    else:
+        fpr_part = fpr[start_idx:]
+        tpr_part = tpr[start_idx:]
+
+    if len(fpr_part) < 2:
+        return 0.0
+
+    return float(auc(fpr_part, tpr_part))
+
+
+def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names):
+    """
+    计算你要求的所有额外指标：
+    1. normalized multi-class accuracy metric = macro recall = balanced accuracy
+    2. sensitivity / specificity / accuracy / AUC / mAP / F1 / PPV / NPV
+    3. Melanoma AUC80
+    4. average AUC across all diagnoses
+    5. malignant vs benign AUC
+    """
+    num_classes = len(class_names)
+    labels = np.arange(num_classes)
+
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    y_true_bin = label_binarize(y_true, classes=labels)
+
+    per_class_metrics = {}
+    per_class_auc_list = []
+    per_class_sensitivity_list = []
+    per_class_specificity_list = []
+    per_class_accuracy_list = []
+    per_class_ap_list = []
+    per_class_f1_list = []
+    per_class_ppv_list = []
+    per_class_npv_list = []
+
+    total_samples = cm.sum()
+
+    for i, class_name in enumerate(class_names):
+        tp = cm[i, i]
+        fn = cm[i, :].sum() - tp
+        fp = cm[:, i].sum() - tp
+        tn = total_samples - tp - fn - fp
+
+        sensitivity = safe_div(tp, tp + fn)       # recall
+        specificity = safe_div(tn, tn + fp)
+        accuracy_i = safe_div(tp + tn, total_samples)
+        ppv = safe_div(tp, tp + fp)               # precision
+        npv = safe_div(tn, tn + fn)
+
+        if np.isnan(ppv) or np.isnan(sensitivity) or (ppv + sensitivity) == 0:
+            f1_i = float("nan")
+        else:
+            f1_i = 2 * ppv * sensitivity / (ppv + sensitivity)
+
+        y_true_i = y_true_bin[:, i]
+        y_prob_i = y_prob[:, i]
+
+        if len(np.unique(y_true_i)) < 2:
+            auc_i = float("nan")
+            ap_i = float("nan")
+        else:
+            auc_i = float(roc_auc_score(y_true_i, y_prob_i))
+            ap_i = float(average_precision_score(y_true_i, y_prob_i))
+
+        melanoma_auc80 = float("nan")
+        if class_name == "MEL":
+            melanoma_auc80 = compute_auc80(y_true_i, y_prob_i, sensitivity_low=0.8)
+
+        per_class_metrics[class_name] = {
+            "sensitivity": float(sensitivity) if not np.isnan(sensitivity) else float("nan"),
+            "specificity": float(specificity) if not np.isnan(specificity) else float("nan"),
+            "accuracy": float(accuracy_i) if not np.isnan(accuracy_i) else float("nan"),
+            "auc": float(auc_i) if not np.isnan(auc_i) else float("nan"),
+            "mean_average_precision": float(ap_i) if not np.isnan(ap_i) else float("nan"),
+            "f1_score": float(f1_i) if not np.isnan(f1_i) else float("nan"),
+            "ppv": float(ppv) if not np.isnan(ppv) else float("nan"),
+            "npv": float(npv) if not np.isnan(npv) else float("nan"),
+            "auc80": float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan")
+        }
+
+        per_class_auc_list.append(auc_i)
+        per_class_sensitivity_list.append(sensitivity)
+        per_class_specificity_list.append(specificity)
+        per_class_accuracy_list.append(accuracy_i)
+        per_class_ap_list.append(ap_i)
+        per_class_f1_list.append(f1_i)
+        per_class_ppv_list.append(ppv)
+        per_class_npv_list.append(npv)
+
+    # -----------------------------
+    # 聚合指标
+    # -----------------------------
+    overall_accuracy = accuracy_score(y_true, y_pred) * 100.0
+
+    # 这个就是你要的 normalized multi-class accuracy metric
+    balanced_macro_recall = balanced_accuracy_score(y_true, y_pred)
+
+    macro_f1 = f1_score(y_true, y_pred, average='macro')
+    macro_precision = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    macro_recall = balanced_macro_recall
+
+    # 宏平均 AUC / AP / Sens / Spec / Acc / PPV / NPV
+    mean_auc_all_diagnoses = float(np.nanmean(per_class_auc_list))
+    mean_ap_all_diagnoses = float(np.nanmean(per_class_ap_list))
+    mean_sensitivity = float(np.nanmean(per_class_sensitivity_list))
+    mean_specificity = float(np.nanmean(per_class_specificity_list))
+    mean_accuracy = float(np.nanmean(per_class_accuracy_list))
+    mean_f1 = float(np.nanmean(per_class_f1_list))
+    mean_ppv = float(np.nanmean(per_class_ppv_list))
+    mean_npv = float(np.nanmean(per_class_npv_list))
+
+    # 你之前已经在算的多分类 OVR macro AUC
+    try:
+        multiclass_macro_auc_ovr = float(
+            roc_auc_score(y_true_bin, y_prob, average='macro', multi_class='ovr')
+        )
+    except ValueError:
+        multiclass_macro_auc_ovr = float("nan")
+
+    # 恶性 vs 良性 AUC
+    # 这里按常见临床分组推断：
+    # malignant = MEL / BCC / AKIEC
+    # benign    = NV / BKL / DF / VASC
+    malignant_names = [name for name in ["MEL", "BCC", "AKIEC"] if name in class_names]
+    malignant_indices = [class_names.index(name) for name in malignant_names]
+
+    if len(malignant_indices) > 0:
+        y_true_malignant = np.isin(y_true, malignant_indices).astype(int)
+        y_prob_malignant = y_prob[:, malignant_indices].sum(axis=1)
+
+        if len(np.unique(y_true_malignant)) < 2:
+            malignant_vs_benign_auc = float("nan")
+        else:
+            malignant_vs_benign_auc = float(
+                roc_auc_score(y_true_malignant, y_prob_malignant)
+            )
+    else:
+        malignant_vs_benign_auc = float("nan")
+
+    melanoma_auc80 = per_class_metrics["MEL"]["auc80"] if "MEL" in per_class_metrics else float("nan")
+
+    metrics = {
+        "overall": {
+            "accuracy": float(overall_accuracy),  # 保持和你原代码一致：百分比
+            "balanced_multiclass_accuracy": float(balanced_macro_recall),   # macro recall
+            "macro_recall": float(macro_recall),
+            "macro_precision": float(macro_precision),
+            "macro_f1": float(macro_f1),
+            "multiclass_macro_auc_ovr": float(multiclass_macro_auc_ovr),
+            "mean_auc_all_diagnoses": float(mean_auc_all_diagnoses),
+            "mean_average_precision_all_diagnoses": float(mean_ap_all_diagnoses),
+            "mean_sensitivity": float(mean_sensitivity),
+            "mean_specificity": float(mean_specificity),
+            "mean_accuracy": float(mean_accuracy),
+            "mean_f1": float(mean_f1),
+            "mean_ppv": float(mean_ppv),
+            "mean_npv": float(mean_npv),
+            "melanoma_auc80": float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan"),
+            "malignant_vs_benign_auc": float(malignant_vs_benign_auc) if not np.isnan(malignant_vs_benign_auc) else float("nan")
+        },
+        "per_class": per_class_metrics,
+        "malignant_definition_used": malignant_names
+    }
+
+    return metrics
 
 
 # =========================================================
@@ -445,11 +646,12 @@ def main():
     print(f"Using device: {device}")
 
     # -----------------------------
-    # 路径配置
+    # ISIC2018 Task3 路径
     # -----------------------------
-    meta_csv_path = r'dataset\MILK10k_Training_Metadata.csv'
-    gt_csv_path = r'dataset\MILK10k_Training_GroundTruth.csv'
-    img_dir = r'dataset\MILK10k_Training_Input\MILK10k_Training_Input'
+    train_gt_csv_path = r'dataset\ISIC2018_Task3_Training_GroundTruth.csv'
+    val_gt_csv_path = r'dataset\ISIC2018_Task3_Validation_GroundTruth.csv'
+    train_img_dir = r'dataset\ISIC2018_Task3_Training_Input'
+    val_img_dir = r'dataset\ISIC2018_Task3_Validation_Input'
 
     # -----------------------------
     # 创建实验目录
@@ -464,18 +666,20 @@ def main():
     # -----------------------------
     # 创建模型
     # -----------------------------
-    if args.pretrained:
-        print(f"=> using pretrained model '{args.arch}'")
-        model = models.__dict__[args.arch](pretrained=True)
+    if args.weights is not None:
+        print(f"=> using weights '{args.weights}' for model '{args.arch}'")
+        weights_enum = models.get_model_weights(args.arch)
+        weights = weights_enum[args.weights]
+        model = models.__dict__[args.arch](weights=weights)
     else:
-        print(f"=> creating model '{args.arch}'")
-        model = models.__dict__[args.arch]()
+        print(f"=> creating model '{args.arch}' with random initialization")
+        model = models.__dict__[args.arch](weights=None)
 
     # -----------------------------
     # 读取类别信息并修改最后分类层
     # -----------------------------
-    gt_df = pd.read_csv(gt_csv_path)
-    class_columns = [c for c in gt_df.columns if c != 'lesion_id']
+    gt_df = pd.read_csv(train_gt_csv_path)
+    class_columns = [c for c in gt_df.columns if c != 'image']
     num_classes = len(class_columns)
     class_names = class_columns
 
@@ -538,62 +742,32 @@ def main():
         )
     ])
 
-    full_dataset = ISICResNetDataset(
-        meta_csv_path=meta_csv_path,
-        gt_csv_path=gt_csv_path,
-        img_dir=img_dir,
+    train_dataset = ISICResNetDataset(
+        gt_csv_path=train_gt_csv_path,
+        img_dir=train_img_dir,
         transform=resnet_transforms
     )
 
-    total_size = len(full_dataset)
-    train_size = int(0.9 * total_size)
-    val_size = total_size - train_size
-
-    # =====================================================
-    # 分层划分训练集和验证集
-    # 目的：尽量保证 train / val 中每个类别的比例接近整体分布，
-    # 从而避免验证集里某些类别完全缺失，导致 ROC 无法计算
-    # =====================================================
-    all_indices = np.arange(total_size)
-    all_labels = np.array(full_dataset.labels)
-
-    train_indices, val_indices = train_test_split(
-        all_indices,
-        test_size=val_size,
-        random_state=args.seed if args.seed is not None else 42,
-        stratify=all_labels
+    val_dataset = ISICResNetDataset(
+        gt_csv_path=val_gt_csv_path,
+        img_dir=val_img_dir,
+        transform=resnet_transforms
     )
 
-    train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
-    val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
-
-    print(f"Full dataset size : {len(full_dataset)}")
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Val dataset size  : {len(val_dataset)}")
 
-    # =====================================================
-    # 新增：训练前统计 full / train / val 三部分每一类图片数量
-    # =====================================================
-    full_class_distribution = count_labels_from_indices(
-        labels=full_dataset.labels,
-        indices=all_indices,
+    # 只打印 train / val，不再打印 full dataset
+    train_class_distribution = count_labels_from_dataset(
+        labels=train_dataset.labels,
         class_names=class_names
     )
 
-    train_class_distribution = count_labels_from_indices(
-        labels=full_dataset.labels,
-        indices=train_indices,
+    val_class_distribution = count_labels_from_dataset(
+        labels=val_dataset.labels,
         class_names=class_names
     )
 
-    val_class_distribution = count_labels_from_indices(
-        labels=full_dataset.labels,
-        indices=val_indices,
-        class_names=class_names
-    )
-
-    # 打印输出，方便你训练前直接检查类别分布
-    print_class_distribution("Full Dataset Class Distribution", full_class_distribution)
     print_class_distribution("Train Dataset Class Distribution", train_class_distribution)
     print_class_distribution("Validation Dataset Class Distribution", val_class_distribution)
 
@@ -623,7 +797,7 @@ def main():
         "experiment_dir": exp_folders["exp_dir"],
         "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "model_name": args.arch,
-        "pretrained": bool(args.pretrained),
+        "weights": args.weights,
         "learning_rate": args.lr,
         "momentum": args.momentum,
         "weight_decay": args.weight_decay,
@@ -633,19 +807,16 @@ def main():
         "seed": args.seed,
         "device": str(device),
         "data": {
-            "meta_csv_path": meta_csv_path,
-            "gt_csv_path": gt_csv_path,
-            "img_dir": img_dir,
-            "full_dataset_size": total_size,
+            "train_gt_csv_path": train_gt_csv_path,
+            "val_gt_csv_path": val_gt_csv_path,
+            "train_img_dir": train_img_dir,
+            "val_img_dir": val_img_dir,
             "train_dataset_size": len(train_dataset),
             "val_dataset_size": len(val_dataset),
-            "split_ratio": "0.9 / 0.1",
+            "split_ratio": "official train / official val",
             "num_classes": num_classes,
             "class_names": class_names,
-
-            # 新增：把 full/train/val 的类别分布保存到元信息里
             "class_distribution": {
-                "full_dataset": full_class_distribution,
                 "train_dataset": train_class_distribution,
                 "val_dataset": val_class_distribution
             }
@@ -662,7 +833,7 @@ def main():
         },
         "best_result": {
             "best_epoch": best_epoch,
-            "best_val_acc": float(best_acc1),
+            "best_val_balanced_acc": float(best_acc1),
             "best_model_path": best_model_path if os.path.exists(best_model_path) else ""
         }
     }
@@ -683,7 +854,8 @@ def main():
             epoch=args.start_epoch,
             roc_dir=exp_folders["roc_dir"],
             cm_dir=exp_folders["cm_dir"],
-            predictions_dir=exp_folders["predictions_dir"]
+            predictions_dir=exp_folders["predictions_dir"],
+            metrics_dir=exp_folders["metrics_dir"]
         )
 
         eval_row = {
@@ -692,12 +864,24 @@ def main():
             "train_loss": None,
             "train_acc": None,
             "val_loss": float(val_metrics["val_loss"]),
-            "val_acc": float(val_metrics["val_acc"]),
-            "val_macro_f1": float(val_metrics["val_macro_f1"]),
-            "val_auroc": float(val_metrics["val_auroc"]),
+            "val_acc": float(val_metrics["overall"]["accuracy"]),
+            "val_balanced_acc": float(val_metrics["overall"]["balanced_multiclass_accuracy"]),
+            "val_macro_recall": float(val_metrics["overall"]["macro_recall"]),
+            "val_macro_f1": float(val_metrics["overall"]["macro_f1"]),
+            "val_macro_precision": float(val_metrics["overall"]["macro_precision"]),
+            "val_auc_macro_ovr": float(val_metrics["overall"]["multiclass_macro_auc_ovr"]),
+            "val_mean_auc_all_diagnoses": float(val_metrics["overall"]["mean_auc_all_diagnoses"]),
+            "val_mean_ap_all_diagnoses": float(val_metrics["overall"]["mean_average_precision_all_diagnoses"]),
+            "val_mean_sensitivity": float(val_metrics["overall"]["mean_sensitivity"]),
+            "val_mean_specificity": float(val_metrics["overall"]["mean_specificity"]),
+            "val_mean_ppv": float(val_metrics["overall"]["mean_ppv"]),
+            "val_mean_npv": float(val_metrics["overall"]["mean_npv"]),
+            "val_melanoma_auc80": float(val_metrics["overall"]["melanoma_auc80"]),
+            "val_malignant_vs_benign_auc": float(val_metrics["overall"]["malignant_vs_benign_auc"]),
             "roc_curve_path": val_metrics["roc_curve_path"],
             "confusion_matrix_path": val_metrics["confusion_matrix_png_path"],
-            "val_predictions_path": val_metrics["val_predictions_csv_path"]
+            "val_predictions_path": val_metrics["val_predictions_csv_path"],
+            "detailed_metrics_path": val_metrics["detailed_metrics_json_path"]
         }
         update_epoch_metrics_csv(metrics_csv_path, eval_row)
         update_epoch_metrics_json(metrics_json_path, eval_row)
@@ -707,6 +891,8 @@ def main():
     # 训练循环
     # -----------------------------
     for epoch in range(args.start_epoch, args.epochs):
+        print(f"\n{'=' * 25} Epoch {epoch + 1}/{args.epochs} {'=' * 25}")
+
         train_metrics = train(train_loader, model, criterion, optimizer, epoch, device, args)
 
         val_metrics = validate(
@@ -720,15 +906,17 @@ def main():
             epoch=epoch + 1,
             roc_dir=exp_folders["roc_dir"],
             cm_dir=exp_folders["cm_dir"],
-            predictions_dir=exp_folders["predictions_dir"]
+            predictions_dir=exp_folders["predictions_dir"],
+            metrics_dir=exp_folders["metrics_dir"]
         )
 
         scheduler.step()
 
-        acc1 = val_metrics["val_acc"]
-        is_best = acc1 > best_acc1
+        # 用 balanced multi-class accuracy 作为 best 指标
+        current_score = val_metrics["overall"]["balanced_multiclass_accuracy"]
+        is_best = current_score > best_acc1
         if is_best:
-            best_acc1 = acc1
+            best_acc1 = current_score
             best_epoch = epoch + 1
 
         save_checkpoint({
@@ -741,81 +929,96 @@ def main():
             'scheduler': scheduler.state_dict()
         }, is_best, save_dir=exp_folders["checkpoints_dir"], filename='last.pth.tar')
 
-        # 每轮指标保存
+        # 每轮指标保存（保存汇总指标）
         epoch_row = {
             "epoch": epoch + 1,
             "lr": float(optimizer.param_groups[0]["lr"]),
             "train_loss": float(train_metrics["train_loss"]),
             "train_acc": float(train_metrics["train_acc"]),
             "val_loss": float(val_metrics["val_loss"]),
-            "val_acc": float(val_metrics["val_acc"]),
-            "val_macro_f1": float(val_metrics["val_macro_f1"]),
-            "val_auroc": float(val_metrics["val_auroc"]),
+            "val_acc": float(val_metrics["overall"]["accuracy"]),
+            "val_balanced_acc": float(val_metrics["overall"]["balanced_multiclass_accuracy"]),
+            "val_macro_recall": float(val_metrics["overall"]["macro_recall"]),
+            "val_macro_f1": float(val_metrics["overall"]["macro_f1"]),
+            "val_macro_precision": float(val_metrics["overall"]["macro_precision"]),
+            "val_auc_macro_ovr": float(val_metrics["overall"]["multiclass_macro_auc_ovr"]),
+            "val_mean_auc_all_diagnoses": float(val_metrics["overall"]["mean_auc_all_diagnoses"]),
+            "val_mean_ap_all_diagnoses": float(val_metrics["overall"]["mean_average_precision_all_diagnoses"]),
+            "val_mean_sensitivity": float(val_metrics["overall"]["mean_sensitivity"]),
+            "val_mean_specificity": float(val_metrics["overall"]["mean_specificity"]),
+            "val_mean_ppv": float(val_metrics["overall"]["mean_ppv"]),
+            "val_mean_npv": float(val_metrics["overall"]["mean_npv"]),
+            "val_melanoma_auc80": float(val_metrics["overall"]["melanoma_auc80"]),
+            "val_malignant_vs_benign_auc": float(val_metrics["overall"]["malignant_vs_benign_auc"]),
             "roc_curve_path": val_metrics["roc_curve_path"],
             "confusion_matrix_path": val_metrics["confusion_matrix_png_path"],
-            "val_predictions_path": val_metrics["val_predictions_csv_path"]
+            "val_predictions_path": val_metrics["val_predictions_csv_path"],
+            "detailed_metrics_path": val_metrics["detailed_metrics_json_path"]
         }
         update_epoch_metrics_csv(metrics_csv_path, epoch_row)
         update_epoch_metrics_json(metrics_json_path, epoch_row)
 
         # 更新实验元信息
         experiment_metadata["best_result"]["best_epoch"] = best_epoch
-        experiment_metadata["best_result"]["best_val_acc"] = float(best_acc1)
+        experiment_metadata["best_result"]["best_val_balanced_acc"] = float(best_acc1)
         experiment_metadata["best_result"]["best_model_path"] = best_model_path if os.path.exists(best_model_path) else ""
         experiment_metadata["last_epoch_finished"] = epoch + 1
         experiment_metadata["updated_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         save_json(experiment_metadata, metadata_json_path)
+
+        # 简洁 epoch 汇总输出
+        print(f"Train Summary | loss={train_metrics['train_loss']:.4f} | acc={train_metrics['train_acc']:.2f}%")
+        print(
+            f"Val Summary   | loss={val_metrics['val_loss']:.4f} "
+            f"| acc={val_metrics['overall']['accuracy']:.2f}% "
+            f"| bal_acc={val_metrics['overall']['balanced_multiclass_accuracy']:.4f} "
+            f"| macro_f1={val_metrics['overall']['macro_f1']:.4f} "
+            f"| auc_macro_ovr={val_metrics['overall']['multiclass_macro_auc_ovr']:.4f}"
+        )
+        print(
+            f"Extra Metrics | mean_auc={val_metrics['overall']['mean_auc_all_diagnoses']:.4f} "
+            f"| mean_ap={val_metrics['overall']['mean_average_precision_all_diagnoses']:.4f} "
+            f"| mel_auc80={val_metrics['overall']['melanoma_auc80']:.4f} "
+            f"| mal_vs_ben_auc={val_metrics['overall']['malignant_vs_benign_auc']:.4f}"
+        )
+        print(f"Artifacts      | ROC={val_metrics['roc_curve_path']}")
+        print(f"Artifacts      | CM ={val_metrics['confusion_matrix_png_path']}")
+        print(f"Artifacts      | PRED={val_metrics['val_predictions_csv_path']}")
+        print(f"Artifacts      | DETAIL={val_metrics['detailed_metrics_json_path']}")
 
 
 # =========================================================
 # 6. 训练函数
 # =========================================================
 def train(train_loader, model, criterion, optimizer, epoch, device, args):
-    batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
-    data_time = AverageMeter('Data', ':6.3f', Summary.NONE)
     losses = AverageMeter('Loss', ':.4e', Summary.NONE)
     top1 = AverageMeter('Acc@1', ':6.2f', Summary.NONE)
-    top5 = AverageMeter('Acc@5', ':6.2f', Summary.NONE)
-
-    progress = ProgressMeter(
-        len(train_loader),
-        [batch_time, data_time, losses, top1, top5],
-        prefix=f"Epoch: [{epoch}]"
-    )
 
     model.train()
 
-    end = time.time()
     for i, (images, target, sample_ids) in enumerate(train_loader):
-        data_time.update(time.time() - end)
-
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
         output = model(images)
         loss = criterion(output, target)
 
-        num_classes = output.size(1)
-        if num_classes >= 5:
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
-            top5.update(acc5[0].item(), images.size(0))
-        else:
-            acc1 = accuracy(output, target, topk=(1,))
-            acc1 = [acc1[0]]
-            top5.update(0.0, images.size(0))
+        acc1 = accuracy(output, target, topk=(1,))[0]
 
         losses.update(loss.item(), images.size(0))
-        top1.update(acc1[0].item(), images.size(0))
+        top1.update(acc1.item(), images.size(0))
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        if i % args.print_freq == 0:
-            progress.display(i + 1)
+        # 单行进度条输出
+        print_single_line_progress(
+            current=i + 1,
+            total=len(train_loader),
+            prefix=f"Train Epoch {epoch + 1}",
+            extra_info=f"loss={losses.avg:.4f} acc={top1.avg:.2f}%"
+        )
 
     return {
         "train_loss": float(losses.avg),
@@ -827,17 +1030,10 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
 # =========================================================
 # 7. 验证函数
 # =========================================================
-def validate(val_loader, model, criterion, device, args, num_classes, class_names, epoch, roc_dir, cm_dir, predictions_dir):
-    batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
+def validate(val_loader, model, criterion, device, args, num_classes, class_names, epoch,
+             roc_dir, cm_dir, predictions_dir, metrics_dir):
     losses = AverageMeter('Loss', ':.4e', Summary.AVERAGE)
     top1 = AverageMeter('Acc@1', ':6.2f', Summary.AVERAGE)
-    top5 = AverageMeter('Acc@5', ':6.2f', Summary.AVERAGE)
-
-    progress = ProgressMeter(
-        len(val_loader),
-        [batch_time, losses, top1, top5],
-        prefix='Val: '
-    )
 
     model.eval()
 
@@ -847,7 +1043,6 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
     all_sample_ids = []
 
     with torch.no_grad():
-        end = time.time()
         for i, (images, target, sample_ids) in enumerate(val_loader):
             images = images.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
@@ -863,47 +1058,24 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
             all_probs.append(probs.cpu().numpy())
             all_sample_ids.extend(sample_ids)
 
-            if output.size(1) >= 5:
-                acc1, acc5 = accuracy(output, target, topk=(1, 5))
-                top5.update(acc5[0].item(), images.size(0))
-            else:
-                acc1 = accuracy(output, target, topk=(1,))
-                acc1 = [acc1[0]]
-                top5.update(0.0, images.size(0))
+            acc1 = accuracy(output, target, topk=(1,))[0]
 
             losses.update(loss.item(), images.size(0))
-            top1.update(acc1[0].item(), images.size(0))
+            top1.update(acc1.item(), images.size(0))
 
-            batch_time.update(time.time() - end)
-            end = time.time()
-
-            if i % args.print_freq == 0:
-                progress.display(i + 1)
-
-    progress.display_summary()
+            # 单行进度条输出
+            print_single_line_progress(
+                current=i + 1,
+                total=len(val_loader),
+                prefix=f"Validate {epoch}",
+                extra_info=f"loss={losses.avg:.4f} acc={top1.avg:.2f}%"
+            )
 
     all_targets = np.concatenate(all_targets, axis=0)
     all_preds = np.concatenate(all_preds, axis=0)
     all_probs = np.concatenate(all_probs, axis=0)
 
-    # 1) 分类指标
-    val_acc = accuracy_score(all_targets, all_preds) * 100.0
-    val_macro_f1 = f1_score(all_targets, all_preds, average='macro')
-
-    # 2) AUROC
-    try:
-        y_true_bin = label_binarize(all_targets, classes=np.arange(num_classes))
-        val_auroc = roc_auc_score(
-            y_true_bin,
-            all_probs,
-            average='macro',
-            multi_class='ovr'
-        )
-    except ValueError as e:
-        print(f"[Warning] AUROC 计算失败，可能是验证集缺少某些类别。错误信息: {e}")
-        val_auroc = float("nan")
-
-    # 3) 保存混淆矩阵
+    # 1) 保存混淆矩阵
     confusion_matrix_csv_path, confusion_matrix_png_path = save_confusion_matrix_artifacts(
         y_true=all_targets,
         y_pred=all_preds,
@@ -912,7 +1084,7 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
         epoch=epoch
     )
 
-    # 4) 保存 ROC 曲线
+    # 2) 保存 ROC 曲线
     roc_curve_path, roc_points_json_path = save_multiclass_roc_artifacts(
         y_true=all_targets,
         y_prob=all_probs,
@@ -921,37 +1093,42 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
         epoch=epoch
     )
 
-    # 5) 保存样本级预测 CSV（新增）
+    # 3) 保存样本级预测 CSV
     val_predictions_csv_path = save_val_predictions_csv(
         sample_ids=all_sample_ids,
         y_true=all_targets,
         y_pred=all_preds,
         y_prob=all_probs,
+        class_names=class_names,
         save_dir=predictions_dir,
         epoch=epoch
     )
 
-    print(
-        f" * Val Metrics => "
-        f"Loss: {losses.avg:.4f}, "
-        f"Acc: {val_acc:.4f}, "
-        f"Macro-F1: {val_macro_f1:.4f}, "
-        f"AUROC: {val_auroc:.4f}"
+    # 4) 计算详细指标
+    detailed_metrics = compute_detailed_classification_metrics(
+        y_true=all_targets,
+        y_pred=all_preds,
+        y_prob=all_probs,
+        class_names=class_names
     )
-    print(f" * ROC curve saved to: {roc_curve_path}")
-    print(f" * Confusion matrix saved to: {confusion_matrix_png_path}")
-    print(f" * Validation predictions saved to: {val_predictions_csv_path}")
+    detailed_metrics["val_loss"] = float(losses.avg)
+
+    detailed_metrics_json_path = save_detailed_metrics_json(
+        detailed_metrics=detailed_metrics,
+        save_dir=metrics_dir,
+        epoch=epoch
+    )
 
     return {
         "val_loss": float(losses.avg),
-        "val_acc": float(val_acc),
-        "val_macro_f1": float(val_macro_f1),
-        "val_auroc": float(val_auroc),
+        "overall": detailed_metrics["overall"],
+        "per_class": detailed_metrics["per_class"],
         "roc_curve_path": roc_curve_path,
         "roc_points_json_path": roc_points_json_path,
         "confusion_matrix_csv_path": confusion_matrix_csv_path,
         "confusion_matrix_png_path": confusion_matrix_png_path,
-        "val_predictions_csv_path": val_predictions_csv_path
+        "val_predictions_csv_path": val_predictions_csv_path,
+        "detailed_metrics_json_path": detailed_metrics_json_path
     }
 
 
@@ -1021,7 +1198,7 @@ class AverageMeter:
 
 
 class ProgressMeter:
-    """打印训练/验证过程中的日志"""
+    """保留原类，但当前主流程已不再使用这个冗长打印方式"""
     def __init__(self, num_batches, meters, prefix=""):
         self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
         self.meters = meters

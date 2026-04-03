@@ -10,12 +10,11 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from PIL import Image
-from sklearn.model_selection import train_test_split
 from tqdm.auto import tqdm
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
 from accelerate import Accelerator
@@ -28,14 +27,14 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 # 1. 参数
 # =========================================================
 def parse_args():
-    parser = argparse.ArgumentParser(description="DDPM baseline for MILK10k dermoscopy images")
+    parser = argparse.ArgumentParser(description="DDPM baseline for ISIC2018 dermoscopy images")
 
     # -------------------------
     # 从已有权重继续训练
     # -------------------------
     parser.add_argument("--resume_from_checkpoint", type=str, default=None,
                         help="Path to a saved checkpoint .pth.tar for resuming training")
-    
+
     # -------------------------
     # DDIM 采样参数
     # 训练仍然使用 DDPM
@@ -47,25 +46,28 @@ def parse_args():
                         help="DDIM eta. Usually 0.0 for deterministic sampling.")
 
     # -------------------------
-    # 数据路径
+    # 数据路径（ISIC2018 Task3）
+    # 现在训练集和验证集是官方直接提供的，不再手动划分
     # -------------------------
-    parser.add_argument("--meta_csv_path", type=str, default="dataset/MILK10k_Training_Metadata.csv",
-                        help="Path to MILK10k_Training_Metadata.csv")
-    parser.add_argument("--gt_csv_path", type=str, default="dataset/MILK10k_Training_GroundTruth.csv",
-                        help="Path to MILK10k_Training_GroundTruth.csv")
-    parser.add_argument("--img_dir", type=str, default="dataset/MILK10k_Training_Input/MILK10k_Training_Input",
-                        help="Path to MILK10k_Training_Input root")
+    parser.add_argument("--train_gt_csv_path", type=str, default="dataset/ISIC2018_Task3_Training_GroundTruth.csv",
+                        help="Path to ISIC2018_Task3_Training_GroundTruth.csv")
+    parser.add_argument("--val_gt_csv_path", type=str, default="dataset/ISIC2018_Task3_Validation_GroundTruth.csv",
+                        help="Path to ISIC2018_Task3_Validation_GroundTruth.csv")
+    parser.add_argument("--train_img_dir", type=str, default="dataset/ISIC2018_Task3_Training_Input",
+                        help="Path to ISIC2018_Task3_Training_Input")
+    parser.add_argument("--val_img_dir", type=str, default="dataset/ISIC2018_Task3_Validation_Input",
+                        help="Path to ISIC2018_Task3_Validation_Input")
 
     # -------------------------
     # 数据模式
     # mode=all:
-    #   不区分label，做 train/val 划分
+    #   使用所有类别
     # mode=single_label:
-    #   只取一个label训练，不划分 train/val
+    #   只取一个label训练/验证
     # -------------------------
     parser.add_argument("--data_mode", type=str, default="all", choices=["all", "single_label"],
-                        help="all: use all dermoscopic images and split train/val; "
-                             "single_label: only use one class and do not split train/val")
+                        help="all: use all dermoscopic images; "
+                             "single_label: only use one class")
     parser.add_argument("--target_label", type=str, default=None,
                         help="Used when data_mode=single_label. Can be class name or class index string.")
 
@@ -79,8 +81,8 @@ def parse_args():
     # 图像和训练超参数
     # -------------------------
     parser.add_argument("--resolution", type=int, default=128)
-    parser.add_argument("--train_batch_size", type=int, default=8)
-    parser.add_argument("--eval_batch_size", type=int, default=8)
+    parser.add_argument("--train_batch_size", type=int, default=32)
+    parser.add_argument("--eval_batch_size", type=int, default=32)
     parser.add_argument("--dataloader_num_workers", type=int, default=4)
     parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
@@ -102,17 +104,20 @@ def parse_args():
 
     # -------------------------
     # 保存与评估
+    # 注意：
+    # --num_fid_samples_val 额外兼容 --num_fid_samples_valid
+    # 当对应值为 0 时，跳过该 split 的 FID 计算
     # -------------------------
-    parser.add_argument("--save_images_epochs", type=int, default=5,
+    parser.add_argument("--save_images_epochs", type=int, default=10,
                         help="Save sample images every N epochs")
-    parser.add_argument("--save_model_epochs", type=int, default=5,
+    parser.add_argument("--save_model_epochs", type=int, default=10,
                         help="Save checkpoint every N epochs")
-    parser.add_argument("--eval_epochs", type=int, default=5,
+    parser.add_argument("--eval_epochs", type=int, default=10,
                         help="Run FID evaluation every N epochs")
-    parser.add_argument("--num_fid_samples_train", type=int, default=512,
-                        help="How many generated samples to compare against training set FID")
-    parser.add_argument("--num_fid_samples_val", type=int, default=512,
-                        help="How many generated samples to compare against validation set FID")
+    parser.add_argument("--num_fid_samples_train", type=int, default=1024,
+                        help="How many generated samples to compare against training set FID. 0 means skip train FID.")
+    parser.add_argument("--num_fid_samples_val", "--num_fid_samples_valid", dest="num_fid_samples_val", type=int, default=194,
+                        help="How many generated samples to compare against validation set FID. 0 means skip val FID.")
 
     # -------------------------
     # 复现
@@ -241,18 +246,20 @@ def save_diffusers_model_index_copy(exp_dir, metadata_dir):
 # =========================================================
 # 3. 数据集
 # =========================================================
-class MILK10kDDPMDataset(Dataset):
+class ISIC2018DDPMDataset(Dataset):
     """
-    - merge metadata 和 ground truth
-    - 只保留 dermoscopic 图像
-    - drop_duplicates(lesion_id)
-    - 支持两种模式：
+    适配 ISIC2018 Task3 的数据集格式：
+    - 图片全部直接放在一个目录下
+    - GroundTruth CSV 第一列是 image
+    - 后面 7 列是独热标签，例如：
+      image,MEL,NV,BCC,AKIEC,BKL,DF,VASC
+
+    支持两种模式：
         1) all: 不按 label 过滤
         2) single_label: 只取某一个类别
     """
     def __init__(
         self,
-        meta_csv_path,
         gt_csv_path,
         img_dir,
         transform=None,
@@ -264,23 +271,13 @@ class MILK10kDDPMDataset(Dataset):
         self.data_mode = data_mode
         self.target_label = target_label
 
-        meta_df = pd.read_csv(meta_csv_path)
-        gt_df = pd.read_csv(gt_csv_path)
+        df = pd.read_csv(gt_csv_path)
 
-        df = pd.merge(meta_df, gt_df, on="lesion_id", how="inner")
+        # 第一列是 image，后面全是类别列
+        self.class_columns = [c for c in df.columns if c != "image"]
 
-        if "image_type" in df.columns:
-            derm_mask = df["image_type"].astype(str).str.contains("dermoscopic", case=False, na=False)
-            df = df[derm_mask].copy()
-
-        df = df.drop_duplicates(subset=["lesion_id"], keep="first").reset_index(drop=True)
-
-        self.class_columns = [c for c in gt_df.columns if c != "lesion_id"]
-
-        if "label" in df.columns:
-            df["label_int"] = df["label"].astype(int)
-        else:
-            df["label_int"] = df[self.class_columns].values.argmax(axis=1)
+        # 由独热编码得到类别索引
+        df["label_int"] = df[self.class_columns].values.argmax(axis=1)
 
         if data_mode == "single_label":
             if target_label is None:
@@ -311,17 +308,8 @@ class MILK10kDDPMDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
 
-        img_id_col = "isic_id" if "isic_id" in row.index else ("image_id" if "image_id" in row.index else None)
-        if img_id_col is None:
-            raise KeyError("Cannot find 'isic_id' or 'image_id' in csv.")
-
-        lesion_id = str(row["lesion_id"]) if "lesion_id" in row.index else None
-        img_name = f"{row[img_id_col]}.jpg"
-
-        if lesion_id:
-            img_path = os.path.join(self.img_dir, lesion_id, img_name)
-        else:
-            img_path = os.path.join(self.img_dir, img_name)
+        image_id = str(row["image"])
+        img_path = os.path.join(self.img_dir, f"{image_id}.jpg")
 
         image = Image.open(img_path).convert("RGB")
 
@@ -329,7 +317,7 @@ class MILK10kDDPMDataset(Dataset):
             image = self.transform(image)
 
         label = int(row["label_int"])
-        sample_id = str(row["lesion_id"]) if "lesion_id" in row.index else str(idx)
+        sample_id = image_id
 
         return {
             "input": image,
@@ -355,6 +343,9 @@ def collect_real_uint8_images(real_loader, device, num_samples):
     """
     从 real_loader 中取出最多 num_samples 张真实图像，并转换成 FID 需要的 uint8 格式
     """
+    if num_samples <= 0:
+        return torch.empty(0, 3, 0, 0, dtype=torch.uint8, device=device), 0
+
     real_batches = []
     real_count = 0
 
@@ -389,6 +380,9 @@ def generate_fake_images_for_fid(
     """
     统一生成一批 fake images，供 train FID 和 val FID 共用
     """
+    if num_gen_samples <= 0:
+        return None, ""
+
     device = accelerator.device
     disable_pipeline_progress_bar(pipeline)
 
@@ -452,6 +446,11 @@ def compute_fid_from_real_and_fake(real_images_uint8, fake_images_uint8, device)
     """
     使用已经准备好的 real / fake uint8 图像直接计算 FID
     """
+    if real_images_uint8 is None or fake_images_uint8 is None:
+        return None
+    if real_images_uint8.size(0) == 0 or fake_images_uint8.size(0) == 0:
+        return None
+
     fid = FrechetInceptionDistance(feature=2048, normalize=False).to(device)
     fid.update(real_images_uint8, real=True)
     fid.update(fake_images_uint8[:real_images_uint8.size(0)], real=False)
@@ -498,60 +497,39 @@ def main(args):
 
     # -------------------------
     # 数据集
+    # 现在直接读取官方训练集和验证集，不再手动 train/val split
     # -------------------------
-    full_dataset = MILK10kDDPMDataset(
-        meta_csv_path=args.meta_csv_path,
-        gt_csv_path=args.gt_csv_path,
-        img_dir=args.img_dir,
+    train_dataset = ISIC2018DDPMDataset(
+        gt_csv_path=args.train_gt_csv_path,
+        img_dir=args.train_img_dir,
         transform=image_transforms,
         data_mode=args.data_mode,
         target_label=args.target_label
     )
 
-    gt_df = pd.read_csv(args.gt_csv_path)
-    class_names = [c for c in gt_df.columns if c != "lesion_id"]
+    val_dataset = ISIC2018DDPMDataset(
+        gt_csv_path=args.val_gt_csv_path,
+        img_dir=args.val_img_dir,
+        transform=image_transforms,
+        data_mode=args.data_mode,
+        target_label=args.target_label
+    )
+
+    gt_df = pd.read_csv(args.train_gt_csv_path)
+    class_names = [c for c in gt_df.columns if c != "image"]
     num_classes = len(class_names)
 
-    print(f"Full filtered dataset size: {len(full_dataset)}")
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Validation dataset size: {len(val_dataset)}")
 
-    if args.data_mode == "all":
-        total_size = len(full_dataset)
-        all_indices = np.arange(total_size)
-        all_labels = np.array(full_dataset.labels)
+    train_indices = np.arange(len(train_dataset))
+    val_indices = np.arange(len(val_dataset))
 
-        train_indices, val_indices = train_test_split(
-            all_indices,
-            test_size=0.1,
-            random_state=args.seed,
-            stratify=all_labels
-        )
+    train_class_distribution = count_labels_from_indices(train_dataset.labels, train_indices, class_names)
+    val_class_distribution = count_labels_from_indices(val_dataset.labels, val_indices, class_names)
 
-        train_dataset = Subset(full_dataset, train_indices)
-        val_dataset = Subset(full_dataset, val_indices)
-
-        full_class_distribution = count_labels_from_indices(full_dataset.labels, all_indices, class_names)
-        train_class_distribution = count_labels_from_indices(full_dataset.labels, train_indices, class_names)
-        val_class_distribution = count_labels_from_indices(full_dataset.labels, val_indices, class_names)
-
-        print_class_distribution("Full Dataset Class Distribution", full_class_distribution)
-        print_class_distribution("Train Dataset Class Distribution", train_class_distribution)
-        print_class_distribution("Validation Dataset Class Distribution", val_class_distribution)
-
-    else:
-        total_size = len(full_dataset)
-        train_dataset = full_dataset
-        val_dataset = None
-
-        single_count_dict = {
-            full_dataset.selected_label_name: total_size
-        }
-
-        print(f"\nUsing single_label mode. Selected label: {full_dataset.selected_label_name}")
-        print(f"Training samples: {total_size}\n")
-
-        full_class_distribution = single_count_dict
-        train_class_distribution = single_count_dict
-        val_class_distribution = {}
+    print_class_distribution("Train Dataset Class Distribution", train_class_distribution)
+    print_class_distribution("Validation Dataset Class Distribution", val_class_distribution)
 
     pin_memory = torch.cuda.is_available()
 
@@ -573,17 +551,14 @@ def main(args):
         drop_last=False,
     )
 
-    if val_dataset is not None:
-        val_eval_loader = DataLoader(
-            val_dataset,
-            batch_size=args.eval_batch_size,
-            shuffle=False,
-            num_workers=args.dataloader_num_workers,
-            pin_memory=pin_memory,
-            drop_last=False,
-        )
-    else:
-        val_eval_loader = None
+    val_eval_loader = DataLoader(
+        val_dataset,
+        batch_size=args.eval_batch_size,
+        shuffle=False,
+        num_workers=args.dataloader_num_workers,
+        pin_memory=pin_memory,
+        drop_last=False,
+    )
 
     # -------------------------
     # 模型
@@ -684,18 +659,17 @@ def main(args):
         "mixed_precision": args.mixed_precision,
         "resume_from_checkpoint": args.resume_from_checkpoint,
         "data": {
-            "meta_csv_path": args.meta_csv_path,
-            "gt_csv_path": args.gt_csv_path,
-            "img_dir": args.img_dir,
+            "train_gt_csv_path": args.train_gt_csv_path,
+            "val_gt_csv_path": args.val_gt_csv_path,
+            "train_img_dir": args.train_img_dir,
+            "val_img_dir": args.val_img_dir,
             "data_mode": args.data_mode,
             "target_label": args.target_label,
             "num_classes": num_classes,
             "class_names": class_names,
-            "full_dataset_size": len(full_dataset),
             "train_dataset_size": len(train_dataset),
-            "val_dataset_size": len(val_dataset) if val_dataset is not None else 0,
+            "val_dataset_size": len(val_dataset),
             "class_distribution": {
-                "full_dataset": full_class_distribution,
                 "train_dataset": train_class_distribution,
                 "val_dataset": val_class_distribution
             }
@@ -801,7 +775,15 @@ def main(args):
         # -------------------------
         need_save_images = ((epoch + 1) % args.save_images_epochs == 0) or (epoch == args.num_epochs - 1)
         need_save_model = ((epoch + 1) % args.save_model_epochs == 0) or (epoch == args.num_epochs - 1)
-        need_eval = ((epoch + 1) % args.eval_epochs == 0) or (epoch == args.num_epochs - 1)
+
+        # 只有当 train/val 至少一边 FID 样本数 > 0 时，才真正执行 FID
+        enable_train_fid = args.num_fid_samples_train > 0
+        enable_val_fid = args.num_fid_samples_val > 0
+
+        need_eval = (
+            (((epoch + 1) % args.eval_epochs == 0) or (epoch == args.num_epochs - 1))
+            and (enable_train_fid or enable_val_fid)
+        )
 
         fid_train_value = None
         fid_val_value = None
@@ -865,9 +847,13 @@ def main(args):
                 print(f"\nEpoch {epoch + 1}/{args.num_epochs}")
                 print("-" * 60)
 
-                target_fake_count = args.num_fid_samples_train
-                if val_eval_loader is not None:
-                    target_fake_count = max(args.num_fid_samples_train, args.num_fid_samples_val)
+                fake_targets = []
+                if enable_train_fid:
+                    fake_targets.append(args.num_fid_samples_train)
+                if enable_val_fid:
+                    fake_targets.append(args.num_fid_samples_val)
+
+                target_fake_count = max(fake_targets) if len(fake_targets) > 0 else 0
 
                 fake_images_uint8, shared_generated_dir = generate_fake_images_for_fid(
                     accelerator=accelerator,
@@ -881,35 +867,41 @@ def main(args):
                     ddim_eta=args.ddim_eta,
                 )
 
-                train_real_uint8, train_real_count = collect_real_uint8_images(
-                    real_loader=train_eval_loader,
-                    device=accelerator.device,
-                    num_samples=args.num_fid_samples_train,
-                )
+                if enable_train_fid:
+                    train_real_uint8, train_real_count = collect_real_uint8_images(
+                        real_loader=train_eval_loader,
+                        device=accelerator.device,
+                        num_samples=args.num_fid_samples_train,
+                    )
 
-                fid_train_value = compute_fid_from_real_and_fake(
-                    real_images_uint8=train_real_uint8,
-                    fake_images_uint8=fake_images_uint8,
-                    device=accelerator.device,
-                )
+                    fid_train_value = compute_fid_from_real_and_fake(
+                        real_images_uint8=train_real_uint8,
+                        fake_images_uint8=fake_images_uint8,
+                        device=accelerator.device,
+                    )
 
-                train_fid_json_path = os.path.join(exp_folders["fid_dir"], f"epoch_{epoch + 1:03d}_train_fid.json")
-                save_json({
-                    "epoch": epoch + 1,
-                    "split": "train",
-                    "num_real_images": int(train_real_count),
-                    "num_fake_images": int(train_real_count),
-                    "fid": float(fid_train_value),
-                    "generated_dir": shared_generated_dir,
-                    "sampler": "ddim" if args.use_ddim_sampling else "ddpm",
-                    "num_inference_steps": int(args.ddpm_num_inference_steps),
-                    "ddim_eta": float(args.ddim_eta) if args.use_ddim_sampling else None,
-                    "shared_fake_images": True,
-                }, train_fid_json_path)
+                    if fid_train_value is not None:
+                        train_fid_json_path = os.path.join(exp_folders["fid_dir"], f"epoch_{epoch + 1:03d}_train_fid.json")
+                        save_json({
+                            "epoch": epoch + 1,
+                            "split": "train",
+                            "num_real_images": int(train_real_count),
+                            "num_fake_images": int(train_real_count),
+                            "fid": float(fid_train_value),
+                            "generated_dir": shared_generated_dir,
+                            "sampler": "ddim" if args.use_ddim_sampling else "ddpm",
+                            "num_inference_steps": int(args.ddpm_num_inference_steps),
+                            "ddim_eta": float(args.ddim_eta) if args.use_ddim_sampling else None,
+                            "shared_fake_images": True,
+                        }, train_fid_json_path)
 
-                print(f"Train FID: {fid_train_value:.6f}")
+                        print(f"Train FID: {fid_train_value:.6f}")
+                    else:
+                        print("Train FID skipped (num_fid_samples_train <= 0 or no valid images).")
+                else:
+                    print("Train FID skipped (--num_fid_samples_train 0).")
 
-                if val_eval_loader is not None:
+                if enable_val_fid:
                     val_real_uint8, val_real_count = collect_real_uint8_images(
                         real_loader=val_eval_loader,
                         device=accelerator.device,
@@ -922,23 +914,26 @@ def main(args):
                         device=accelerator.device,
                     )
 
-                    val_fid_json_path = os.path.join(exp_folders["fid_dir"], f"epoch_{epoch + 1:03d}_val_fid.json")
-                    save_json({
-                        "epoch": epoch + 1,
-                        "split": "val",
-                        "num_real_images": int(val_real_count),
-                        "num_fake_images": int(val_real_count),
-                        "fid": float(fid_val_value),
-                        "generated_dir": shared_generated_dir,
-                        "sampler": "ddim" if args.use_ddim_sampling else "ddpm",
-                        "num_inference_steps": int(args.ddpm_num_inference_steps),
-                        "ddim_eta": float(args.ddim_eta) if args.use_ddim_sampling else None,
-                        "shared_fake_images": True,
-                    }, val_fid_json_path)
+                    if fid_val_value is not None:
+                        val_fid_json_path = os.path.join(exp_folders["fid_dir"], f"epoch_{epoch + 1:03d}_val_fid.json")
+                        save_json({
+                            "epoch": epoch + 1,
+                            "split": "val",
+                            "num_real_images": int(val_real_count),
+                            "num_fake_images": int(val_real_count),
+                            "fid": float(fid_val_value),
+                            "generated_dir": shared_generated_dir,
+                            "sampler": "ddim" if args.use_ddim_sampling else "ddpm",
+                            "num_inference_steps": int(args.ddpm_num_inference_steps),
+                            "ddim_eta": float(args.ddim_eta) if args.use_ddim_sampling else None,
+                            "shared_fake_images": True,
+                        }, val_fid_json_path)
 
-                    print(f"Val FID: {fid_val_value:.6f}")
+                        print(f"Val FID: {fid_val_value:.6f}")
+                    else:
+                        print("Val FID skipped (num_fid_samples_val <= 0 or no valid images).")
                 else:
-                    print("Val FID skipped (no validation split).")
+                    print("Val FID skipped (--num_fid_samples_val 0).")
 
             # 3) 保存模型
             is_best = False
