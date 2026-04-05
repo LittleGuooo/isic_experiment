@@ -7,9 +7,9 @@
 - `test.Ipynb`、`day1.py` 等：你的代码和实验脚本。
 
 # 执行代码
-python classifier.py --epochs 30
+python classifier.py --epochs 50
 
-python diffusion.py --use_ddim_sampling --ddpm_num_inference_steps 100 --resolution 128 --num_fid_samples_train 1024 --num_fid_samples_val 0 --mixed_precision fp16 --num_epochs 80
+python diffusion.py --use_ddim_sampling --ddpm_num_inference_steps 100 --resolution 128 --num_fid_samples_train 1024 --num_fid_samples_val 0 --mixed_precision fp16 --num_epochs 80 --use_class_conditioning
 
 
 # git代码
@@ -42,3 +42,6 @@ diffusion.py使用了DDIM加速采样
 ## version 2.1
 优化了classifier.py和diffusion.py的代码逻辑。
 使用了更完善的评价指标
+
+## version 2.2
+diffusion.py变成条件扩散模型

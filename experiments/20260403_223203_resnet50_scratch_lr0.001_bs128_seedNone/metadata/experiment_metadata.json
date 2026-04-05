@@ -1,14 +1,14 @@
 {
     "experiment_name": "20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone",
     "experiment_dir": "experiments\\20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone",
-    "created_time": "2026-04-03 22:32:03",
+    "created_time": "2026-04-04 22:52:05",
     "model_name": "resnet50",
     "weights": null,
     "learning_rate": 0.001,
     "momentum": 0.9,
     "weight_decay": 0.0001,
     "batch_size": 128,
-    "epochs": 30,
+    "epochs": 100,
     "seed": null,
     "device": "cuda:0",
     "data": {
@@ -61,14 +61,14 @@
         "predictions_dir": "experiments\\20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone\\predictions"
     },
     "resume": {
-        "resume_path": null,
-        "start_epoch": 0
+        "resume_path": "experiments\\20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone\\checkpoints\\last.pth.tar",
+        "start_epoch": 80
     },
     "best_result": {
-        "best_epoch": 25,
-        "best_val_balanced_acc": 0.41227619650964603,
+        "best_epoch": 32,
+        "best_val_balanced_acc": 0.427661508062205,
         "best_model_path": "experiments\\20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone\\checkpoints\\model_best.pth.tar"
     },
-    "last_epoch_finished": 30,
-    "updated_time": "2026-04-03 23:32:49"
+    "last_epoch_finished": 100,
+    "updated_time": "2026-04-04 23:30:29"
 }

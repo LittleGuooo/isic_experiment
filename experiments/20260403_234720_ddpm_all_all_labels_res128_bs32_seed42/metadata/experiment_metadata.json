@@ -75,8 +75,10 @@
     "best_result": {
         "best_epoch_by_val_fid": -1,
         "best_val_fid": null,
-        "best_epoch_by_train_fid": -1,
-        "best_train_fid": null,
-        "best_model_path": ""
-    }
+        "best_epoch_by_train_fid": 95,
+        "best_train_fid": 88.9748306274414,
+        "best_model_path": "experiments\\20260403_234720_ddpm_all_all_labels_res128_bs32_seed42\\checkpoints\\model_best.pth.tar"
+    },
+    "last_epoch_finished": 95,
+    "updated_time": "2026-04-05 23:41:12"
 }
