@@ -1976,6 +1976,7 @@ def main(args):
             "UpBlock2D",
         ),
         num_class_embeds=num_classes if args.use_class_conditioning else None,
+        resnet_time_scale_shift="default",
     )
 
     # 噪声调度器（DDPM Scheduler）
@@ -2083,6 +2084,28 @@ def main(args):
         with open(metadata_json_path, "r", encoding="utf-8") as f:
             experiment_metadata = json.load(f)
         print(f"Loaded existing metadata from: {metadata_json_path}")
+
+        if "paths" not in experiment_metadata:
+            experiment_metadata["paths"] = {
+                "metrics_csv": metrics_csv_path,
+                "metrics_json": metrics_json_path,
+                "metadata_json": metadata_json_path,
+                "checkpoints_dir": exp_folders["checkpoints_dir"],
+                "samples_dir": exp_folders["samples_dir"],
+                "fid_dir": exp_folders["fid_dir"],
+                "fid_generated_dir": exp_folders["fid_generated_dir"],
+                "diffusers_model_index_copy": os.path.join(
+                    exp_folders["metadata_dir"], "diffusers_pipeline_model_index.json"
+                ),
+            }
+        if "best_result" not in experiment_metadata:
+            experiment_metadata["best_result"] = {
+                "best_epoch_by_val_fid": -1,
+                "best_val_fid": None,
+                "best_epoch_by_train_fid": -1,
+                "best_train_fid": None,
+                "best_model_path": "",
+            }
 
         # 恢复训练时，把“当前实际使用参数”同步回 metadata
         if args.run_mode == "train":

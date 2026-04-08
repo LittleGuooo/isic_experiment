@@ -11,6 +11,9 @@ python classifier.py --epochs 50
 
 python diffusion.py --run_mode train --use_class_conditioning --num_epochs 100 --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --use_ddim_sampling --resolution 128 --num_fid_samples_train 2048
 
+python diffusion.py --run_mode val_only --use_class_conditioning  --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --use_ddim_sampling --resolution 128 --num_fid_samples_train 1024
+
+python CFG_diffusion.py --run_mode train --use_class_conditioning --num_epochs 100 --use_ddim_sampling --resolution 128 --num_fid_samples_train 2048
 
 # git代码
 git checkout --orphan clean_branch
@@ -50,3 +53,6 @@ diffusion.py变成条件扩散模型
 
 ## version 2.5
 上传GitHub
+
+## version 2.6
+创建CFG_diffusion.py

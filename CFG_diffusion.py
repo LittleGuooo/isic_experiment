@@ -40,6 +40,21 @@ def parse_args():
         description="DDPM baseline for ISIC2018 dermoscopy images"
     )
 
+    # ===== CFG 参数 =====
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=3.0,
+        help="CFG guidance scale (only used during inference)",
+    )
+
+    parser.add_argument(
+        "--uncond_prob",
+        type=float,
+        default=0.15,
+        help="Probability of dropping condition during training (CFG)",
+    )
+
     # -------------------------
     # 断点续训
     # -------------------------
@@ -855,13 +870,33 @@ def sample_images_with_model(
         device=device,
     )
 
+    null_class_id = 7  # ISIC2018 共 7 类，索引 0~6；使用 7 作为 null 条件的类别 ID
     for t in sampling_scheduler.timesteps:
         model_input = sample
         if hasattr(sampling_scheduler, "scale_model_input"):
             model_input = sampling_scheduler.scale_model_input(model_input, t)
 
         if use_class_conditioning and class_labels is not None:
-            noise_pred = model(model_input, t, class_labels=class_labels).sample
+            # =============================================
+            # CFG采样过程
+            # =============================================
+
+            # 条件预测
+            noise_pred_cond = model(model_input, t, class_labels=class_labels).sample
+
+            # 无条件预测（全部设为 null）
+            null_class_labels = torch.full_like(class_labels, fill_value=null_class_id)
+
+            noise_pred_uncond = model(
+                model_input, t, class_labels=null_class_labels
+            ).sample
+
+            # CFG 合成
+            guidance_scale = args.guidance_scale  # 可调（2~5常用）
+
+            noise_pred = noise_pred_uncond + guidance_scale * (
+                noise_pred_cond - noise_pred_uncond
+            )
         else:
             noise_pred = model(model_input, t).sample
 
@@ -1900,7 +1935,9 @@ def main(args):
 
     gt_df = pd.read_csv(args.train_gt_csv_path)
     class_names = [c for c in gt_df.columns if c != "image"]
-    num_classes = len(class_names)
+
+    # CFG修改：类别数 = 实际类别数 + 1（因为 UNet2DModel 的 num_class_embeds 需要包含一个额外的 "无类别" 索引）
+    num_classes = len(class_names) + 1
 
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(val_dataset)}")
@@ -1976,6 +2013,7 @@ def main(args):
             "UpBlock2D",
         ),
         num_class_embeds=num_classes if args.use_class_conditioning else None,
+        resnet_time_scale_shift="scale_shift",
     )
 
     # 噪声调度器（DDPM Scheduler）
@@ -2084,6 +2122,28 @@ def main(args):
             experiment_metadata = json.load(f)
         print(f"Loaded existing metadata from: {metadata_json_path}")
 
+        if "paths" not in experiment_metadata:
+            experiment_metadata["paths"] = {
+                "metrics_csv": metrics_csv_path,
+                "metrics_json": metrics_json_path,
+                "metadata_json": metadata_json_path,
+                "checkpoints_dir": exp_folders["checkpoints_dir"],
+                "samples_dir": exp_folders["samples_dir"],
+                "fid_dir": exp_folders["fid_dir"],
+                "fid_generated_dir": exp_folders["fid_generated_dir"],
+                "diffusers_model_index_copy": os.path.join(
+                    exp_folders["metadata_dir"], "diffusers_pipeline_model_index.json"
+                ),
+            }
+        if "best_result" not in experiment_metadata:
+            experiment_metadata["best_result"] = {
+                "best_epoch_by_val_fid": -1,
+                "best_val_fid": None,
+                "best_epoch_by_train_fid": -1,
+                "best_train_fid": None,
+                "best_model_path": "",
+            }
+
         # 恢复训练时，把“当前实际使用参数”同步回 metadata
         if args.run_mode == "train":
             experiment_metadata = sync_experiment_metadata_for_resume(
@@ -2177,6 +2237,24 @@ def main(args):
         for step, batch in enumerate(train_dataloader):
             clean_images = batch["input"]
             class_labels = batch["label"].to(clean_images.device).long()
+
+            # =============== CFG dropout ===================
+            # null class id = 最后一个类
+            null_class_id = num_classes - 1
+
+            # 设置 unconditional 概率（CFG论文常用 0.1~0.2）
+            uncond_prob = args.uncond_prob
+
+            # 生成 mask：哪些样本变成 unconditional
+            mask = (
+                torch.rand(class_labels.shape, device=class_labels.device) < uncond_prob
+            )
+
+            # 替换为 null class
+            class_labels = class_labels.clone()
+            class_labels[mask] = null_class_id
+            # ==============================================
+
             noise = torch.randn_like(clean_images)
             timesteps = torch.randint(
                 0,
