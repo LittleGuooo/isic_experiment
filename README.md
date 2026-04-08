@@ -45,8 +45,8 @@ diffusion.py使用了DDIM加速采样
 ## version 2.2
 diffusion.py变成条件扩散模型
 
-## verion 2.3
-优化了diffusion.py代码逻辑
-
 ## version 2.4
 加入了仅评估/仅推理模式
+
+## version 2.5
+上传GitHub

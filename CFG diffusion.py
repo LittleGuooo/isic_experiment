@@ -2420,7 +2420,7 @@ def main(args):
                     print("Val FID skipped (--num_fid_samples_val 0).")
 
             # 3) 保存模型
-            # 修改位置：best checkpoint 只依据 overall train FID
+            # best checkpoint 依据 overall train FID
             is_best = False
             if fid_train_value is not None:
                 if fid_train_value < best_train_fid:

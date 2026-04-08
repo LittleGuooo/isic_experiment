@@ -1834,11 +1834,6 @@ def main(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    accelerator = Accelerator(
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        mixed_precision=args.mixed_precision,
-    )
-
     if (
         args.run_mode in ["val_only", "infer_only"]
         and args.resume_from_checkpoint is None
@@ -1870,6 +1865,13 @@ def main(args):
     )
     best_model_path = os.path.join(exp_folders["checkpoints_dir"], "model_best.pth.tar")
 
+    # Accelerator 初始化
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=args.mixed_precision,
+    )
+
+    # 数据准备
     image_transforms = transforms.Compose(
         [
             transforms.Resize(
@@ -1976,6 +1978,7 @@ def main(args):
         num_class_embeds=num_classes if args.use_class_conditioning else None,
     )
 
+    # 噪声调度器（DDPM Scheduler）
     noise_scheduler = DDPMScheduler(
         num_train_timesteps=args.ddpm_num_steps,
         beta_schedule=args.ddpm_beta_schedule,
@@ -2031,6 +2034,7 @@ def main(args):
             accelerator.end_training()
             return
 
+    # 优化器
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,
@@ -2044,6 +2048,7 @@ def main(args):
     )
     max_train_steps = args.num_epochs * num_update_steps_per_epoch
 
+    # diffusers加速器学习率调度器
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler,
         optimizer=optimizer,
@@ -2069,6 +2074,7 @@ def main(args):
         print(f"Recovered best_val_fid = {best_val_fid}")
         print(f"Recovered best_train_fid = {best_train_fid}")
 
+    # diffusers加速器
     model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, lr_scheduler
     )
