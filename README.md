@@ -9,7 +9,7 @@
 # 执行代码
 python classifier.py --epochs 50
 
-python diffusion.py --use_ddim_sampling --ddpm_num_inference_steps 100 --resolution 128 --num_fid_samples_train 1024 --num_fid_samples_val 0 --mixed_precision fp16 --num_epochs 80 --use_class_conditioning
+python diffusion.py --run_mode train --use_class_conditioning --num_epochs 100 --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --use_ddim_sampling --resolution 128 --num_fid_samples_train 2048
 
 
 # git代码
@@ -40,8 +40,13 @@ diffusion.py使用了DDIM加速采样
 数据集修改成ISIC2018
 
 ## version 2.1
-优化了classifier.py和diffusion.py的代码逻辑。
-使用了更完善的评价指标
+优化了classifier.py和diffusion.py的代码逻辑;使用了更完善的评价指标
 
 ## version 2.2
 diffusion.py变成条件扩散模型
+
+## verion 2.3
+优化了diffusion.py代码逻辑
+
+## version 2.4
+加入了仅评估/仅推理模式
