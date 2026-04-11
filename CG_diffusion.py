@@ -829,10 +829,6 @@ def sample_images_with_model(
     class_labels=None,
     ddim_eta=0.0,
 ):
-    """
-    用手写 denoising loop 采样。
-    这样无论是否开启类别条件，都能统一控制。
-    """
     try:
         sampling_scheduler.set_timesteps(num_inference_steps, device=device)
     except TypeError:
@@ -2445,19 +2441,21 @@ def main(args):
                         fid_train_value
                     )
 
+            checkpoint_state = {
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "model_state_dict": unet.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "lr_scheduler_state_dict": lr_scheduler.state_dict(),
+                "best_val_fid": best_val_fid,
+                "best_train_fid": best_train_fid,
+                "args": vars(args),
+                "exp_dir": exp_folders["exp_dir"],
+            }
+
             if need_save_model or is_best:
                 save_checkpoint(
-                    {
-                        "epoch": epoch + 1,
-                        "global_step": global_step,
-                        "model_state_dict": unet.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-                        "best_val_fid": best_val_fid,
-                        "best_train_fid": best_train_fid,
-                        "args": vars(args),
-                        "exp_dir": exp_folders["exp_dir"],
-                    },
+                    checkpoint_state,
                     is_best=is_best,
                     save_dir=exp_folders["checkpoints_dir"],
                     filename="last.pth.tar",
@@ -2467,6 +2465,33 @@ def main(args):
                     experiment_metadata["best_result"][
                         "best_model_path"
                     ] = best_model_path
+
+                pipeline.save_pretrained(exp_folders["exp_dir"])
+                diffusers_model_index_copy_path = save_diffusers_model_index_copy(
+                    exp_dir=exp_folders["exp_dir"],
+                    metadata_dir=exp_folders["metadata_dir"],
+                )
+                print(
+                    f"Checkpoint saved to: {os.path.join(exp_folders['checkpoints_dir'], 'last.pth.tar')}"
+                )
+                print(
+                    f"Diffusers model index copy saved to: {diffusers_model_index_copy_path}"
+                )
+                if is_best:
+                    print("New best model saved.")
+
+            # 每次评估时，额外保存一个 epoch 快照
+            if need_eval:
+                eval_ckpt_name = f"epoch_{epoch + 1:03d}.pth.tar"
+                save_checkpoint(
+                    checkpoint_state,
+                    is_best=False,
+                    save_dir=exp_folders["checkpoints_dir"],
+                    filename=eval_ckpt_name,
+                )
+                print(
+                    f"Eval snapshot saved to: {os.path.join(exp_folders['checkpoints_dir'], eval_ckpt_name)}"
+                )
 
                 pipeline.save_pretrained(exp_folders["exp_dir"])
                 diffusers_model_index_copy_path = save_diffusers_model_index_copy(

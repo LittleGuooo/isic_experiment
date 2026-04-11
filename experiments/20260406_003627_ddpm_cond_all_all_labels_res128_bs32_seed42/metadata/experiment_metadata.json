@@ -27,7 +27,7 @@
     "resume_from_checkpoint": "experiments\\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\\checkpoints\\last.pth.tar",
     "resume_epoch": 87,
     "resume_global_step": 27144,
-    "updated_time": "2026-04-11 16:40:30",
+    "updated_time": "2026-04-11 17:56:56",
     "last_runtime_args": {
         "resume_from_checkpoint": "experiments\\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\\checkpoints\\last.pth.tar",
         "run_mode": "train",
@@ -93,8 +93,8 @@
         "num_epochs": 120,
         "learning_rate": 0.0001,
         "gradient_accumulation_steps": 1,
-        "start_epoch": 94,
-        "initial_global_step": 30798
+        "start_epoch": 107,
+        "initial_global_step": 38923
     },
     "paths": {
         "metrics_csv": "experiments\\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\\metrics\\epoch_metrics.csv",
@@ -113,5 +113,5 @@
         "best_train_fid": null,
         "best_model_path": ""
     },
-    "last_epoch_finished": 100
+    "last_epoch_finished": 110
 }

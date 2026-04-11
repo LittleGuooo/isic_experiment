@@ -57,13 +57,13 @@
         "use_class_conditioning": true
     },
     "training": {
-        "train_batch_size": 16,
-        "eval_batch_size": 16,
-        "num_epochs": 100,
+        "train_batch_size": 20,
+        "eval_batch_size": 20,
+        "num_epochs": 150,
         "learning_rate": 0.0001,
         "gradient_accumulation_steps": 1,
-        "start_epoch": 26,
-        "initial_global_step": 10842
+        "start_epoch": 120,
+        "initial_global_step": 67092
     },
     "paths": {
         "metrics_csv": "experiments\\20260409_182550_ddpm_cond_all_all_labels_res128_bs24_seed42\\metrics\\epoch_metrics.csv",
@@ -82,8 +82,8 @@
         "best_train_fid": 96.61072540283203,
         "best_model_path": "experiments\\20260409_182550_ddpm_cond_all_all_labels_res128_bs24_seed42\\checkpoints\\model_best.pth.tar"
     },
-    "last_epoch_finished": 100,
-    "updated_time": "2026-04-10 11:02:50",
+    "last_epoch_finished": 140,
+    "updated_time": "2026-04-12 00:29:35",
     "last_runtime_args": {
         "guidance_scale": 3.0,
         "uncond_prob": 0.15,
@@ -102,10 +102,10 @@
         "use_class_conditioning": true,
         "output_root": "experiments",
         "resolution": 128,
-        "train_batch_size": 16,
-        "eval_batch_size": 16,
+        "train_batch_size": 20,
+        "eval_batch_size": 20,
         "dataloader_num_workers": 4,
-        "num_epochs": 100,
+        "num_epochs": 150,
         "gradient_accumulation_steps": 1,
         "learning_rate": 0.0001,
         "adam_beta1": 0.95,
