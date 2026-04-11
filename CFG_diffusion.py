@@ -616,17 +616,6 @@ def sync_experiment_metadata_for_resume(
     experiment_metadata["resume_from_checkpoint"] = args.resume_from_checkpoint
     experiment_metadata["last_runtime_args"] = vars(args)
 
-    if "resume_history" not in experiment_metadata:
-        experiment_metadata["resume_history"] = []
-
-    experiment_metadata["resume_history"].append(
-        {
-            "time": now_str,
-            "checkpoint_path": args.resume_from_checkpoint,
-            "args": vars(args),
-        }
-    )
-
     # 更新 data 配置
     if "data" not in experiment_metadata:
         experiment_metadata["data"] = {}
@@ -2238,7 +2227,7 @@ def main(args):
             clean_images = batch["input"]
             class_labels = batch["label"].to(clean_images.device).long()
 
-            # =============== CFG dropout ===================
+            # =============== CFG dropout =================================
             # null class id = 最后一个类
             null_class_id = num_classes - 1
 
@@ -2253,7 +2242,7 @@ def main(args):
             # 替换为 null class
             class_labels = class_labels.clone()
             class_labels[mask] = null_class_id
-            # ==============================================
+            # =================================================================
 
             noise = torch.randn_like(clean_images)
             timesteps = torch.randint(

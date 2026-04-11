@@ -1,5 +1,5 @@
 {
-    "experiment_name": "20260403_234720_ddpm_all_all_labels_res128_bs32_seed42",
+    "experiment_name": "DDPM无条件训练",
     "experiment_dir": "experiments\\20260403_234720_ddpm_all_all_labels_res128_bs32_seed42",
     "created_time": "2026-04-03 23:47:20",
     "seed": 42,

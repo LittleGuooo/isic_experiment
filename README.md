@@ -9,11 +9,11 @@
 # 执行代码
 python classifier.py --epochs 50
 
-python diffusion.py --run_mode train --use_class_conditioning --num_epochs 100 --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --use_ddim_sampling --resolution 128 --num_fid_samples_train 2048
+python diffusion.py --run_mode train --use_class_conditioning --num_epochs 120 --use_ddim_sampling --resolution 128 --num_fid_samples_train 1024 --ddpm_num_inference_steps 100 --train_batch_size 20 --eval_batch_size 20 --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar
 
-python diffusion.py --run_mode val_only --use_class_conditioning  --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --use_ddim_sampling --resolution 128 --num_fid_samples_train 1024
+python diffusion.py --run_mode val_only --use_class_conditioning --use_ddim_sampling --resolution 128 --num_fid_samples_train 1024 --ddpm_num_inference_steps 100 --train_batch_size 20 --eval_batch_size 20 --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar
 
-python CFG_diffusion.py --run_mode train --use_class_conditioning --num_epochs 100 --use_ddim_sampling --resolution 128 --num_fid_samples_train 2048
+python CFG_diffusion.py --run_mode train --use_class_conditioning --num_epochs 100 --use_ddim_sampling --resolution 128  --num_fid_samples_train 1024 --ddpm_num_inference_steps 100 --train_batch_size 20 --eval_batch_size 20 --resume_from_checkpoint experiments\20260409_182550_ddpm_cond_all_all_labels_res128_bs24_seed42\checkpoints\last.pth.tar
 
 # git代码
 git checkout --orphan clean_branch

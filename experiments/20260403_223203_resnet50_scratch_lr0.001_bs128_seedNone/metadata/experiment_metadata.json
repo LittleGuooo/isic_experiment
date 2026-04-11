@@ -1,5 +1,5 @@
 {
-    "experiment_name": "20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone",
+    "experiment_name": "resnet50分类器baseline",
     "experiment_dir": "experiments\\20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone",
     "created_time": "2026-04-04 22:52:05",
     "model_name": "resnet50",
