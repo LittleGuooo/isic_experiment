@@ -1,16 +1,17 @@
-import torch
+import pandas as pd
 
-ckpt = torch.load(
-    "experiments/20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42/checkpoints/last.pth.tar",
-    map_location="cpu",
+# 读取 CSV
+df = pd.read_csv(
+    "experiments\\20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone\\metrics\\epoch_metrics.csv"
 )
-args = ckpt.get("args", {})
-sd = ckpt.get("model_state_dict", {})
-print("保存时的 use_class_conditioning:", args.get("use_class_conditioning"))
-print("保存时的 num_classes:", args.get("num_classes"))
-print("保存时的 resolution:", args.get("resolution"))
-for k in ["conv_in.weight", "class_embedding.weight"]:
-    if k in sd:
-        print(f"{k}: {sd[k].shape}")
-    else:
-        print(f"{k}: 不存在")
+
+# 保留第一列（epoch）是 5 的倍数的行
+df_filtered = df[df.iloc[:, 0] % 5 == 0]
+
+# 保存结果
+df_filtered.to_csv(
+    "experiments\\20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone\\metrics\\epoch_metrics.csv",
+    index=False,
+)
+
+print("处理完成 🎉，结果已保存到 output.csv")

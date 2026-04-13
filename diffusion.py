@@ -40,6 +40,14 @@ def parse_args():
         description="DDPM baseline for ISIC2018 dermoscopy images"
     )
 
+    parser.add_argument(
+        "--resnet_time_scale_shift",
+        type=str,
+        default="default",
+        choices=["default", "scale_shift"],
+        help="ResNet 时间尺度移位方式",
+    )
+
     # -------------------------
     # 断点续训
     # -------------------------
@@ -1827,6 +1835,7 @@ def main(args):
             f"When run_mode='{args.run_mode}', --resume_from_checkpoint must be provided."
         )
 
+    # 复用checkpoint训练
     if args.resume_from_checkpoint is not None:
         print(f"Loading checkpoint from: {args.resume_from_checkpoint}")
         checkpoint = torch.load(args.resume_from_checkpoint, map_location="cpu")
@@ -1961,7 +1970,7 @@ def main(args):
             "UpBlock2D",
         ),
         num_class_embeds=num_classes if args.use_class_conditioning else None,
-        resnet_time_scale_shift="default",
+        resnet_time_scale_shift=args.resnet_time_scale_shift,
     )
 
     # 噪声调度器（DDPM Scheduler）

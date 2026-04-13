@@ -82,8 +82,8 @@
         "best_train_fid": 96.61072540283203,
         "best_model_path": "experiments\\20260409_182550_ddpm_cond_all_all_labels_res128_bs24_seed42\\checkpoints\\model_best.pth.tar"
     },
-    "last_epoch_finished": 140,
-    "updated_time": "2026-04-12 00:29:35",
+    "last_epoch_finished": 150,
+    "updated_time": "2026-04-12 02:05:42",
     "last_runtime_args": {
         "guidance_scale": 3.0,
         "uncond_prob": 0.15,
@@ -126,5 +126,6 @@
         "num_fid_samples_val": 193,
         "ipr_k": 3,
         "seed": 42
-    }
+    },
+    "description": "类别条件扩散模型 + CFG，time_scale_shift = AdaN。"
 }

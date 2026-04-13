@@ -70,5 +70,6 @@
         "best_model_path": "experiments\\20260403_223203_resnet50_scratch_lr0.001_bs128_seedNone\\checkpoints\\model_best.pth.tar"
     },
     "last_epoch_finished": 100,
-    "updated_time": "2026-04-04 23:30:29"
+    "updated_time": "2026-04-04 23:30:29",
+    "description": "ResNet50预训练分类器，没有扩充图片。"
 }

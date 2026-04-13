@@ -37,7 +37,7 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
     average_precision_score,
     balanced_accuracy_score,
-    precision_score
+    precision_score,
 )
 from sklearn.preprocessing import label_binarize
 from sklearn.model_selection import train_test_split
@@ -49,41 +49,95 @@ from tqdm.auto import tqdm  # 新增：使用 tqdm 改善训练/验证进度条
 # 1. 支持的模型名称
 # =========================================================
 model_names = sorted(
-    name for name in models.__dict__
-    if name.islower() and not name.startswith("__")
-    and callable(models.__dict__[name])
+    name
+    for name in models.__dict__
+    if name.islower() and not name.startswith("__") and callable(models.__dict__[name])
 )
+
 
 # =========================================================
 # 2. 命令行参数
 # =========================================================
-parser = argparse.ArgumentParser(description='PyTorch ResNet50 Training for ISIC2018 Task3')
-parser.add_argument('--arch', default='resnet50', choices=model_names,
-                    help='model architecture (default: resnet50)')
-parser.add_argument('--workers', default=4, type=int,
-                    help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=20, type=int,
-                    help='number of total epochs to run')
-parser.add_argument('--batch-size', default=128, type=int,
-                    help='mini-batch size (default: 128)')
-parser.add_argument('--lr', '--learning-rate', default=0.001, type=float,
-                    dest='lr', help='initial learning rate')
-parser.add_argument('--momentum', default=0.9, type=float,
-                    help='momentum')
-parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
-                    dest='weight_decay', help='weight decay (default: 1e-4)')
-parser.add_argument('--print-freq', default=10, type=int,
-                    help='print frequency (保留参数，但这里主要使用 tqdm 进度条)')
-parser.add_argument('--resume', default=None, type=str,
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('--evaluate', action='store_true',
-                    help='evaluate model on validation set only')
-parser.add_argument('--weights', default=None, type=str,
-                    help='pretrained weights name, e.g. DEFAULT / IMAGENET1K_V1 / IMAGENET1K_V2')
-parser.add_argument('--seed', default=None, type=int,
-                    help='seed for initializing training')
-parser.add_argument('--gpu', default=0, type=int,
-                    help='GPU id to use, e.g. 0. If not set, automatically choose cuda/cpu')
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="PyTorch ResNet50 Training for ISIC2018 Task3"
+    )
+
+    # 1. 基础训练参数
+    parser.add_argument(
+        "--arch",
+        default="resnet50",
+        choices=model_names,
+        help="模型架构，支持torchvision内置模型 (default: resnet50)",
+    )
+    parser.add_argument(
+        "--epochs", default=20, type=int, help="训练总轮数 (default: 20)"
+    )
+    parser.add_argument(
+        "--batch-size",
+        default=128,
+        type=int,
+        help="每个mini-batch的样本数 (default: 128)",
+    )
+    parser.add_argument(
+        "--workers", default=4, type=int, help="数据加载进程数 (default: 4)"
+    )
+
+    # 2. 优化器与学习率相关参数
+    parser.add_argument(
+        "--lr",
+        "--learning-rate",
+        default=0.001,
+        type=float,
+        dest="lr",
+        help="初始学习率 (default: 0.001)",
+    )
+    parser.add_argument(
+        "--momentum", default=0.9, type=float, help="动量参数 (default: 0.9)"
+    )
+    parser.add_argument(
+        "--wd",
+        "--weight-decay",
+        default=1e-4,
+        type=float,
+        dest="weight_decay",
+        help="权重衰减 (default: 1e-4)",
+    )
+
+    # 3. 运行控制参数
+    parser.add_argument(
+        "--print-freq",
+        default=10,
+        type=int,
+        help="打印频率（保留参数，主流程用tqdm进度条）",
+    )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        type=str,
+        help="恢复训练的checkpoint路径 (default: None)",
+    )
+    parser.add_argument("--evaluate", action="store_true", help="仅在验证集上评估模型")
+
+    # 4. 预训练权重与复现性参数
+    parser.add_argument(
+        "--weights",
+        default=None,
+        type=str,
+        help="预训练权重名称，如 DEFAULT / IMAGENET1K_V1 / IMAGENET1K_V2",
+    )
+    parser.add_argument("--seed", default=42, type=int, help="随机种子，保证实验可复现")
+
+    # 5. 设备相关参数
+    parser.add_argument(
+        "--gpu",
+        default=0,
+        type=int,
+        help="使用的GPU编号，如0。未设置时自动选择cuda/cpu",
+    )
+
+    return parser.parse_args()
+
 
 best_acc1 = 0.0
 
@@ -102,7 +156,7 @@ class ISICResNetDataset(Dataset):
 
         df = pd.read_csv(gt_csv_path)
 
-        self.class_columns = [c for c in df.columns if c != 'image']
+        self.class_columns = [c for c in df.columns if c != "image"]
         self.df = df.reset_index(drop=True)
 
         # 提前计算整数标签，后面统计类别分布会用到
@@ -114,11 +168,11 @@ class ISICResNetDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
 
-        image_id = str(row['image'])
+        image_id = str(row["image"])
         img_name = f"{image_id}.jpg"
         img_path = os.path.join(self.img_dir, img_name)
 
-        image = Image.open(img_path).convert('RGB')
+        image = Image.open(img_path).convert("RGB")
 
         if self.transform is not None:
             image = self.transform(image)
@@ -171,7 +225,7 @@ def setup_experiment_folders(base_dir, exp_name):
         "metadata_dir": metadata_dir,
         "roc_dir": roc_dir,
         "cm_dir": cm_dir,
-        "predictions_dir": predictions_dir
+        "predictions_dir": predictions_dir,
     }
 
 
@@ -202,7 +256,7 @@ def reuse_experiment_folders(exp_dir):
         "metadata_dir": metadata_dir,
         "roc_dir": roc_dir,
         "cm_dir": cm_dir,
-        "predictions_dir": predictions_dir
+        "predictions_dir": predictions_dir,
     }
 
 
@@ -287,7 +341,7 @@ def save_multiclass_roc_artifacts(y_true, y_prob, class_names, save_dir, epoch):
         "num_classes": num_classes,
         "class_names": class_names,
         "per_class": {},
-        "macro_average_auc": None
+        "macro_average_auc": None,
     }
 
     plt.figure(figsize=(10, 8))
@@ -310,7 +364,7 @@ def save_multiclass_roc_artifacts(y_true, y_prob, class_names, save_dir, epoch):
         roc_points["per_class"][class_name] = {
             "fpr": fpr.tolist(),
             "tpr": tpr.tolist(),
-            "auc": float(roc_auc)
+            "auc": float(roc_auc),
         }
 
         plt.plot(fpr, tpr, lw=2, label=f"{class_name} (AUC={roc_auc:.3f})")
@@ -343,10 +397,10 @@ def save_multiclass_roc_artifacts(y_true, y_prob, class_names, save_dir, epoch):
                 linestyle="--",
                 linewidth=3,
                 color="navy",
-                label=f"Macro-average ROC (AUC={macro_auc:.3f})"
+                label=f"Macro-average ROC (AUC={macro_auc:.3f})",
             )
 
-    plt.plot([0, 1], [0, 1], 'k--', lw=1)
+    plt.plot([0, 1], [0, 1], "k--", lw=1)
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.05])
     plt.xlabel("False Positive Rate")
@@ -366,7 +420,9 @@ def save_multiclass_roc_artifacts(y_true, y_prob, class_names, save_dir, epoch):
     return roc_png_path, roc_json_path
 
 
-def save_val_predictions_csv(sample_ids, y_true, y_pred, y_prob, class_names, save_dir, epoch):
+def save_val_predictions_csv(
+    sample_ids, y_true, y_pred, y_prob, class_names, save_dir, epoch
+):
     """
     保存样本级验证预测结果
     每个样本一行：
@@ -375,7 +431,7 @@ def save_val_predictions_csv(sample_ids, y_true, y_pred, y_prob, class_names, sa
     data = {
         "case_id": list(sample_ids),
         "y_true": y_true.tolist(),
-        "y_pred": y_pred.tolist()
+        "y_pred": y_pred.tolist(),
     }
 
     num_classes = y_prob.shape[1]
@@ -516,10 +572,10 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
         fp = cm[:, i].sum() - tp
         tn = total_samples - tp - fn - fp
 
-        sensitivity = safe_div(tp, tp + fn)       # recall
+        sensitivity = safe_div(tp, tp + fn)  # recall
         specificity = safe_div(tn, tn + fp)
         accuracy_i = safe_div(tp + tn, total_samples)
-        ppv = safe_div(tp, tp + fp)               # precision
+        ppv = safe_div(tp, tp + fp)  # precision
         npv = safe_div(tn, tn + fn)
 
         if np.isnan(ppv) or np.isnan(sensitivity) or (ppv + sensitivity) == 0:
@@ -542,15 +598,23 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
             melanoma_auc80 = compute_auc80(y_true_i, y_prob_i, sensitivity_low=0.8)
 
         per_class_metrics[class_name] = {
-            "sensitivity": float(sensitivity) if not np.isnan(sensitivity) else float("nan"),
-            "specificity": float(specificity) if not np.isnan(specificity) else float("nan"),
+            "sensitivity": (
+                float(sensitivity) if not np.isnan(sensitivity) else float("nan")
+            ),
+            "specificity": (
+                float(specificity) if not np.isnan(specificity) else float("nan")
+            ),
             "accuracy": float(accuracy_i) if not np.isnan(accuracy_i) else float("nan"),
             "auc": float(auc_i) if not np.isnan(auc_i) else float("nan"),
-            "mean_average_precision": float(ap_i) if not np.isnan(ap_i) else float("nan"),
+            "mean_average_precision": (
+                float(ap_i) if not np.isnan(ap_i) else float("nan")
+            ),
             "f1_score": float(f1_i) if not np.isnan(f1_i) else float("nan"),
             "ppv": float(ppv) if not np.isnan(ppv) else float("nan"),
             "npv": float(npv) if not np.isnan(npv) else float("nan"),
-            "auc80": float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan")
+            "auc80": (
+                float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan")
+            ),
         }
 
         per_class_auc_list.append(auc_i)
@@ -570,8 +634,8 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
     # 这个就是你要的 normalized multi-class accuracy metric
     balanced_macro_recall = balanced_accuracy_score(y_true, y_pred)
 
-    macro_f1 = f1_score(y_true, y_pred, average='macro')
-    macro_precision = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    macro_f1 = f1_score(y_true, y_pred, average="macro")
+    macro_precision = precision_score(y_true, y_pred, average="macro", zero_division=0)
     macro_recall = balanced_macro_recall
 
     # 宏平均 AUC / AP / Sens / Spec / Acc / PPV / NPV
@@ -587,7 +651,7 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
     # 你之前已经在算的多分类 OVR macro AUC
     try:
         multiclass_macro_auc_ovr = float(
-            roc_auc_score(y_true_bin, y_prob, average='macro', multi_class='ovr')
+            roc_auc_score(y_true_bin, y_prob, average="macro", multi_class="ovr")
         )
     except ValueError:
         multiclass_macro_auc_ovr = float("nan")
@@ -612,12 +676,18 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
     else:
         malignant_vs_benign_auc = float("nan")
 
-    melanoma_auc80 = per_class_metrics["MEL"]["auc80"] if "MEL" in per_class_metrics else float("nan")
+    melanoma_auc80 = (
+        per_class_metrics["MEL"]["auc80"]
+        if "MEL" in per_class_metrics
+        else float("nan")
+    )
 
     metrics = {
         "overall": {
             "accuracy": float(overall_accuracy),  # 保持和你原代码一致：百分比
-            "balanced_multiclass_accuracy": float(balanced_macro_recall),   # macro recall
+            "balanced_multiclass_accuracy": float(
+                balanced_macro_recall
+            ),  # macro recall
             "macro_recall": float(macro_recall),
             "macro_precision": float(macro_precision),
             "macro_f1": float(macro_f1),
@@ -630,11 +700,17 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
             "mean_f1": float(mean_f1),
             "mean_ppv": float(mean_ppv),
             "mean_npv": float(mean_npv),
-            "melanoma_auc80": float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan"),
-            "malignant_vs_benign_auc": float(malignant_vs_benign_auc) if not np.isnan(malignant_vs_benign_auc) else float("nan")
+            "melanoma_auc80": (
+                float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan")
+            ),
+            "malignant_vs_benign_auc": (
+                float(malignant_vs_benign_auc)
+                if not np.isnan(malignant_vs_benign_auc)
+                else float("nan")
+            ),
         },
         "per_class": per_class_metrics,
-        "malignant_definition_used": malignant_names
+        "malignant_definition_used": malignant_names,
     }
 
     return metrics
@@ -645,8 +721,7 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
 # =========================================================
 def main():
     global best_acc1
-    args = parser.parse_args()
-
+    args = parse_args()
     # -----------------------------
     # 固定随机种子
     # -----------------------------
@@ -659,8 +734,8 @@ def main():
             torch.cuda.manual_seed_all(args.seed)
 
         warnings.warn(
-            'You have chosen to seed training. '
-            'This may slow down training a bit, but improves reproducibility.'
+            "You have chosen to seed training. "
+            "This may slow down training a bit, but improves reproducibility."
         )
 
     # -----------------------------
@@ -668,25 +743,24 @@ def main():
     # -----------------------------
     if torch.cuda.is_available():
         if args.gpu is not None:
-            device = torch.device(f'cuda:{args.gpu}')
+            device = torch.device(f"cuda:{args.gpu}")
         else:
-            device = torch.device('cuda')
+            device = torch.device("cuda")
     else:
-        device = torch.device('cpu')
+        device = torch.device("cpu")
 
     print(f"Using device: {device}")
 
     # -----------------------------
     # ISIC2018 Task3 路径
     # -----------------------------
-    train_gt_csv_path = r'dataset\ISIC2018_Task3_Training_GroundTruth.csv'
-    val_gt_csv_path = r'dataset\ISIC2018_Task3_Validation_GroundTruth.csv'
-    train_img_dir = r'dataset\ISIC2018_Task3_Training_Input'
-    val_img_dir = r'dataset\ISIC2018_Task3_Validation_Input'
+    train_gt_csv_path = r"dataset\ISIC2018_Task3_Training_GroundTruth.csv"
+    val_gt_csv_path = r"dataset\ISIC2018_Task3_Validation_GroundTruth.csv"
+    train_img_dir = r"dataset\ISIC2018_Task3_Training_Input"
+    val_img_dir = r"dataset\ISIC2018_Task3_Validation_Input"
 
     # -----------------------------
     # 先准备 start_epoch / checkpoint 变量
-    # 注意：删除了 --start-epoch 参数后，训练起点完全由 checkpoint 决定
     # -----------------------------
     start_epoch = 0
     best_epoch = -1
@@ -694,25 +768,32 @@ def main():
 
     # -----------------------------
     # 创建或复用实验目录
-    # resume 时：优先复用 checkpoint 里记录的旧实验目录
     # -----------------------------
     if args.resume is not None and os.path.isfile(args.resume):
-        print(f"=> loading checkpoint metadata from '{args.resume}' to recover experiment folder")
+        print(
+            f"=> loading checkpoint metadata from '{args.resume}' to recover experiment folder"
+        )
         checkpoint = torch.load(args.resume, map_location=device)
 
-        if 'exp_dir' not in checkpoint:
-            raise ValueError("resume 的 checkpoint 中没有 'exp_dir'，无法复用旧实验目录。")
+        if "exp_dir" not in checkpoint:
+            raise ValueError(
+                "resume 的 checkpoint 中没有 'exp_dir'，无法复用旧实验目录。"
+            )
 
-        exp_folders = reuse_experiment_folders(checkpoint['exp_dir'])
-        exp_name = os.path.basename(checkpoint['exp_dir'])
+        exp_folders = reuse_experiment_folders(checkpoint["exp_dir"])
+        exp_name = os.path.basename(checkpoint["exp_dir"])
         print(f"=> reusing experiment folder: {exp_folders['exp_dir']}")
     else:
         exp_name = make_experiment_name(args)
-        exp_folders = setup_experiment_folders(base_dir="experiments", exp_name=exp_name)
+        exp_folders = setup_experiment_folders(
+            base_dir="experiments", exp_name=exp_name
+        )
 
     metrics_csv_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.csv")
     metrics_json_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.json")
-    metadata_json_path = os.path.join(exp_folders["metadata_dir"], "experiment_metadata.json")
+    metadata_json_path = os.path.join(
+        exp_folders["metadata_dir"], "experiment_metadata.json"
+    )
 
     # -----------------------------
     # 创建模型
@@ -730,15 +811,17 @@ def main():
     # 读取类别信息并修改最后分类层
     # -----------------------------
     gt_df = pd.read_csv(train_gt_csv_path)
-    class_columns = [c for c in gt_df.columns if c != 'image']
+    class_columns = [c for c in gt_df.columns if c != "image"]
     num_classes = len(class_columns)
     class_names = class_columns
 
-    if hasattr(model, 'fc') and isinstance(model.fc, nn.Linear):
+    if hasattr(model, "fc") and isinstance(model.fc, nn.Linear):
         in_features = model.fc.in_features
         model.fc = nn.Linear(in_features, num_classes)
     else:
-        raise ValueError(f"当前代码只处理带有 model.fc 的模型，当前模型 {args.arch} 不满足该条件。")
+        raise ValueError(
+            f"当前代码只处理带有 model.fc 的模型，当前模型 {args.arch} 不满足该条件。"
+        )
 
     model = model.to(device)
 
@@ -751,7 +834,7 @@ def main():
         model.parameters(),
         lr=args.lr,
         momentum=args.momentum,
-        weight_decay=args.weight_decay
+        weight_decay=args.weight_decay,
     )
 
     scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
@@ -767,17 +850,19 @@ def main():
 
         # checkpoint 里的 epoch 表示“已经完成到哪一轮”
         # 所以下一轮训练应该从这个 epoch 开始继续
-        start_epoch = checkpoint['epoch']
-        best_acc1 = checkpoint['best_acc1']
+        start_epoch = checkpoint["epoch"]
+        best_acc1 = checkpoint["best_acc1"]
 
-        model.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        scheduler.load_state_dict(checkpoint['scheduler'])
+        model.load_state_dict(checkpoint["state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
 
-        if 'best_epoch' in checkpoint:
-            best_epoch = checkpoint['best_epoch']
+        if "best_epoch" in checkpoint:
+            best_epoch = checkpoint["best_epoch"]
 
-        print(f"=> loaded checkpoint '{args.resume}' (finished epoch {checkpoint['epoch']})")
+        print(
+            f"=> loaded checkpoint '{args.resume}' (finished epoch {checkpoint['epoch']})"
+        )
         print(f"=> training will continue from epoch {start_epoch + 1}")
 
     elif args.resume is not None:
@@ -786,25 +871,22 @@ def main():
     # =====================================================
     # 数据加载部分
     # =====================================================
-    resnet_transforms = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-    ])
+    resnet_transforms = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
 
     train_dataset = ISICResNetDataset(
         gt_csv_path=train_gt_csv_path,
         img_dir=train_img_dir,
-        transform=resnet_transforms
+        transform=resnet_transforms,
     )
 
     val_dataset = ISICResNetDataset(
-        gt_csv_path=val_gt_csv_path,
-        img_dir=val_img_dir,
-        transform=resnet_transforms
+        gt_csv_path=val_gt_csv_path, img_dir=val_img_dir, transform=resnet_transforms
     )
 
     print(f"Train dataset size: {len(train_dataset)}")
@@ -812,26 +894,28 @@ def main():
 
     # 只打印 train / val，不再打印 full dataset
     train_class_distribution = count_labels_from_dataset(
-        labels=train_dataset.labels,
-        class_names=class_names
+        labels=train_dataset.labels, class_names=class_names
     )
 
     val_class_distribution = count_labels_from_dataset(
-        labels=val_dataset.labels,
-        class_names=class_names
+        labels=val_dataset.labels, class_names=class_names
     )
 
-    print_class_distribution("Train Dataset Class Distribution", train_class_distribution)
-    print_class_distribution("Validation Dataset Class Distribution", val_class_distribution)
+    print_class_distribution(
+        "Train Dataset Class Distribution", train_class_distribution
+    )
+    print_class_distribution(
+        "Validation Dataset Class Distribution", val_class_distribution
+    )
 
-    pin_memory = (device.type == 'cuda')
+    pin_memory = device.type == "cuda"
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.workers,
-        pin_memory=pin_memory
+        pin_memory=pin_memory,
     )
 
     val_loader = DataLoader(
@@ -839,7 +923,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.workers,
-        pin_memory=pin_memory
+        pin_memory=pin_memory,
     )
 
     # -----------------------------
@@ -871,28 +955,29 @@ def main():
             "class_names": class_names,
             "class_distribution": {
                 "train_dataset": train_class_distribution,
-                "val_dataset": val_class_distribution
-            }
+                "val_dataset": val_class_distribution,
+            },
         },
         "paths": {
             "metrics_csv": metrics_csv_path,
             "metrics_json": metrics_json_path,
             "metadata_json": metadata_json_path,
-            "last_checkpoint": os.path.join(exp_folders["checkpoints_dir"], "last.pth.tar"),
+            "last_checkpoint": os.path.join(
+                exp_folders["checkpoints_dir"], "last.pth.tar"
+            ),
             "best_checkpoint": best_model_path,
             "roc_dir": exp_folders["roc_dir"],
             "confusion_matrix_dir": exp_folders["cm_dir"],
-            "predictions_dir": exp_folders["predictions_dir"]
+            "predictions_dir": exp_folders["predictions_dir"],
         },
-        "resume": {
-            "resume_path": args.resume,
-            "start_epoch": start_epoch
-        },
+        "resume": {"resume_path": args.resume, "start_epoch": start_epoch},
         "best_result": {
             "best_epoch": best_epoch,
             "best_val_balanced_acc": float(best_acc1),
-            "best_model_path": best_model_path if os.path.exists(best_model_path) else ""
-        }
+            "best_model_path": (
+                best_model_path if os.path.exists(best_model_path) else ""
+            ),
+        },
     }
     save_json(experiment_metadata, metadata_json_path)
 
@@ -917,7 +1002,7 @@ def main():
             roc_dir=exp_folders["roc_dir"],
             cm_dir=exp_folders["cm_dir"],
             predictions_dir=exp_folders["predictions_dir"],
-            metrics_dir=exp_folders["metrics_dir"]
+            metrics_dir=exp_folders["metrics_dir"],
         )
 
         eval_row = {
@@ -927,23 +1012,33 @@ def main():
             "train_acc": None,
             "val_loss": float(val_metrics["val_loss"]),
             "val_acc": float(val_metrics["overall"]["accuracy"]),
-            "val_balanced_acc": float(val_metrics["overall"]["balanced_multiclass_accuracy"]),
+            "val_balanced_acc": float(
+                val_metrics["overall"]["balanced_multiclass_accuracy"]
+            ),
             "val_macro_recall": float(val_metrics["overall"]["macro_recall"]),
             "val_macro_f1": float(val_metrics["overall"]["macro_f1"]),
             "val_macro_precision": float(val_metrics["overall"]["macro_precision"]),
-            "val_auc_macro_ovr": float(val_metrics["overall"]["multiclass_macro_auc_ovr"]),
-            "val_mean_auc_all_diagnoses": float(val_metrics["overall"]["mean_auc_all_diagnoses"]),
-            "val_mean_ap_all_diagnoses": float(val_metrics["overall"]["mean_average_precision_all_diagnoses"]),
+            "val_auc_macro_ovr": float(
+                val_metrics["overall"]["multiclass_macro_auc_ovr"]
+            ),
+            "val_mean_auc_all_diagnoses": float(
+                val_metrics["overall"]["mean_auc_all_diagnoses"]
+            ),
+            "val_mean_ap_all_diagnoses": float(
+                val_metrics["overall"]["mean_average_precision_all_diagnoses"]
+            ),
             "val_mean_sensitivity": float(val_metrics["overall"]["mean_sensitivity"]),
             "val_mean_specificity": float(val_metrics["overall"]["mean_specificity"]),
             "val_mean_ppv": float(val_metrics["overall"]["mean_ppv"]),
             "val_mean_npv": float(val_metrics["overall"]["mean_npv"]),
             "val_melanoma_auc80": float(val_metrics["overall"]["melanoma_auc80"]),
-            "val_malignant_vs_benign_auc": float(val_metrics["overall"]["malignant_vs_benign_auc"]),
+            "val_malignant_vs_benign_auc": float(
+                val_metrics["overall"]["malignant_vs_benign_auc"]
+            ),
             "roc_curve_path": val_metrics["roc_curve_path"],
             "confusion_matrix_path": val_metrics["confusion_matrix_png_path"],
             "val_predictions_path": val_metrics["val_predictions_csv_path"],
-            "detailed_metrics_path": val_metrics["detailed_metrics_json_path"]
+            "detailed_metrics_path": val_metrics["detailed_metrics_json_path"],
         }
         update_epoch_metrics_csv(metrics_csv_path, eval_row)
         update_epoch_metrics_json(metrics_json_path, eval_row)
@@ -956,7 +1051,9 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         print(f"\n{'=' * 25} Epoch {epoch + 1}/{args.epochs} {'=' * 25}")
 
-        train_metrics = train(train_loader, model, criterion, optimizer, epoch, device, args)
+        train_metrics = train(
+            train_loader, model, criterion, optimizer, epoch, device, args
+        )
 
         val_metrics = validate(
             val_loader=val_loader,
@@ -970,7 +1067,7 @@ def main():
             roc_dir=exp_folders["roc_dir"],
             cm_dir=exp_folders["cm_dir"],
             predictions_dir=exp_folders["predictions_dir"],
-            metrics_dir=exp_folders["metrics_dir"]
+            metrics_dir=exp_folders["metrics_dir"],
         )
 
         scheduler.step()
@@ -982,16 +1079,23 @@ def main():
             best_acc1 = current_score
             best_epoch = epoch + 1
 
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'arch': args.arch,
-            'state_dict': model.state_dict(),
-            'best_acc1': best_acc1,
-            'best_epoch': best_epoch,
-            'optimizer': optimizer.state_dict(),
-            'scheduler': scheduler.state_dict(),
-            'exp_dir': exp_folders["exp_dir"]  # 新增：保存实验目录，供 resume 时复用
-        }, is_best, save_dir=exp_folders["checkpoints_dir"], filename='last.pth.tar')
+        save_checkpoint(
+            {
+                "epoch": epoch + 1,
+                "arch": args.arch,
+                "state_dict": model.state_dict(),
+                "best_acc1": best_acc1,
+                "best_epoch": best_epoch,
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "exp_dir": exp_folders[
+                    "exp_dir"
+                ],  # 新增：保存实验目录，供 resume 时复用
+            },
+            is_best,
+            save_dir=exp_folders["checkpoints_dir"],
+            filename="last.pth.tar",
+        )
 
         # 每轮指标保存（保存汇总指标）
         epoch_row = {
@@ -1001,23 +1105,33 @@ def main():
             "train_acc": float(train_metrics["train_acc"]),
             "val_loss": float(val_metrics["val_loss"]),
             "val_acc": float(val_metrics["overall"]["accuracy"]),
-            "val_balanced_acc": float(val_metrics["overall"]["balanced_multiclass_accuracy"]),
+            "val_balanced_acc": float(
+                val_metrics["overall"]["balanced_multiclass_accuracy"]
+            ),
             "val_macro_recall": float(val_metrics["overall"]["macro_recall"]),
             "val_macro_f1": float(val_metrics["overall"]["macro_f1"]),
             "val_macro_precision": float(val_metrics["overall"]["macro_precision"]),
-            "val_auc_macro_ovr": float(val_metrics["overall"]["multiclass_macro_auc_ovr"]),
-            "val_mean_auc_all_diagnoses": float(val_metrics["overall"]["mean_auc_all_diagnoses"]),
-            "val_mean_ap_all_diagnoses": float(val_metrics["overall"]["mean_average_precision_all_diagnoses"]),
+            "val_auc_macro_ovr": float(
+                val_metrics["overall"]["multiclass_macro_auc_ovr"]
+            ),
+            "val_mean_auc_all_diagnoses": float(
+                val_metrics["overall"]["mean_auc_all_diagnoses"]
+            ),
+            "val_mean_ap_all_diagnoses": float(
+                val_metrics["overall"]["mean_average_precision_all_diagnoses"]
+            ),
             "val_mean_sensitivity": float(val_metrics["overall"]["mean_sensitivity"]),
             "val_mean_specificity": float(val_metrics["overall"]["mean_specificity"]),
             "val_mean_ppv": float(val_metrics["overall"]["mean_ppv"]),
             "val_mean_npv": float(val_metrics["overall"]["mean_npv"]),
             "val_melanoma_auc80": float(val_metrics["overall"]["melanoma_auc80"]),
-            "val_malignant_vs_benign_auc": float(val_metrics["overall"]["malignant_vs_benign_auc"]),
+            "val_malignant_vs_benign_auc": float(
+                val_metrics["overall"]["malignant_vs_benign_auc"]
+            ),
             "roc_curve_path": val_metrics["roc_curve_path"],
             "confusion_matrix_path": val_metrics["confusion_matrix_png_path"],
             "val_predictions_path": val_metrics["val_predictions_csv_path"],
-            "detailed_metrics_path": val_metrics["detailed_metrics_json_path"]
+            "detailed_metrics_path": val_metrics["detailed_metrics_json_path"],
         }
         update_epoch_metrics_csv(metrics_csv_path, epoch_row)
         update_epoch_metrics_json(metrics_json_path, epoch_row)
@@ -1025,13 +1139,19 @@ def main():
         # 更新实验元信息
         experiment_metadata["best_result"]["best_epoch"] = best_epoch
         experiment_metadata["best_result"]["best_val_balanced_acc"] = float(best_acc1)
-        experiment_metadata["best_result"]["best_model_path"] = best_model_path if os.path.exists(best_model_path) else ""
+        experiment_metadata["best_result"]["best_model_path"] = (
+            best_model_path if os.path.exists(best_model_path) else ""
+        )
         experiment_metadata["last_epoch_finished"] = epoch + 1
-        experiment_metadata["updated_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        experiment_metadata["updated_time"] = datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         save_json(experiment_metadata, metadata_json_path)
 
         # 简洁 epoch 汇总输出
-        print(f"Train Summary | loss={train_metrics['train_loss']:.4f} | acc={train_metrics['train_acc']:.2f}%")
+        print(
+            f"Train Summary | loss={train_metrics['train_loss']:.4f} | acc={train_metrics['train_acc']:.2f}%"
+        )
         print(
             f"Val Summary   | loss={val_metrics['val_loss']:.4f} "
             f"| acc={val_metrics['overall']['accuracy']:.2f}% "
@@ -1055,8 +1175,8 @@ def main():
 # 6. 训练函数
 # =========================================================
 def train(train_loader, model, criterion, optimizer, epoch, device, args):
-    losses = AverageMeter('Loss', ':.4e', Summary.NONE)
-    top1 = AverageMeter('Acc@1', ':6.2f', Summary.NONE)
+    losses = AverageMeter("Loss", ":.4e", Summary.NONE)
+    top1 = AverageMeter("Acc@1", ":6.2f", Summary.NONE)
 
     model.train()
 
@@ -1068,7 +1188,7 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
         train_loader,
         total=len(train_loader),
         desc=f"Train Epoch {epoch + 1}",
-        leave=False
+        leave=False,
     )
 
     for i, (images, target, sample_ids) in enumerate(progress_bar):
@@ -1088,25 +1208,36 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
         optimizer.step()
 
         # 在 tqdm 右侧动态显示平均 loss / acc
-        progress_bar.set_postfix({
-            "loss": f"{losses.avg:.4f}",
-            "acc": f"{top1.avg:.2f}%"
-        })
+        progress_bar.set_postfix(
+            {"loss": f"{losses.avg:.4f}", "acc": f"{top1.avg:.2f}%"}
+        )
 
     return {
         "train_loss": float(losses.avg),
         "train_acc": float(top1.avg),
-        "lr": float(optimizer.param_groups[0]["lr"])
+        "lr": float(optimizer.param_groups[0]["lr"]),
     }
 
 
 # =========================================================
 # 7. 验证函数
 # =========================================================
-def validate(val_loader, model, criterion, device, args, num_classes, class_names, epoch,
-             roc_dir, cm_dir, predictions_dir, metrics_dir):
-    losses = AverageMeter('Loss', ':.4e', Summary.AVERAGE)
-    top1 = AverageMeter('Acc@1', ':6.2f', Summary.AVERAGE)
+def validate(
+    val_loader,
+    model,
+    criterion,
+    device,
+    args,
+    num_classes,
+    class_names,
+    epoch,
+    roc_dir,
+    cm_dir,
+    predictions_dir,
+    metrics_dir,
+):
+    losses = AverageMeter("Loss", ":.4e", Summary.AVERAGE)
+    top1 = AverageMeter("Acc@1", ":6.2f", Summary.AVERAGE)
 
     model.eval()
 
@@ -1117,10 +1248,7 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
 
     with torch.no_grad():
         progress_bar = tqdm(
-            val_loader,
-            total=len(val_loader),
-            desc=f"Validate {epoch}",
-            leave=False
+            val_loader, total=len(val_loader), desc=f"Validate {epoch}", leave=False
         )
 
         for i, (images, target, sample_ids) in enumerate(progress_bar):
@@ -1144,22 +1272,23 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
             top1.update(acc1.item(), images.size(0))
 
             # 在 tqdm 右侧动态显示平均 loss / acc
-            progress_bar.set_postfix({
-                "loss": f"{losses.avg:.4f}",
-                "acc": f"{top1.avg:.2f}%"
-            })
+            progress_bar.set_postfix(
+                {"loss": f"{losses.avg:.4f}", "acc": f"{top1.avg:.2f}%"}
+            )
 
     all_targets = np.concatenate(all_targets, axis=0)
     all_preds = np.concatenate(all_preds, axis=0)
     all_probs = np.concatenate(all_probs, axis=0)
 
     # 1) 保存混淆矩阵
-    confusion_matrix_csv_path, confusion_matrix_png_path = save_confusion_matrix_artifacts(
-        y_true=all_targets,
-        y_pred=all_preds,
-        class_names=class_names,
-        save_dir=cm_dir,
-        epoch=epoch
+    confusion_matrix_csv_path, confusion_matrix_png_path = (
+        save_confusion_matrix_artifacts(
+            y_true=all_targets,
+            y_pred=all_preds,
+            class_names=class_names,
+            save_dir=cm_dir,
+            epoch=epoch,
+        )
     )
 
     # 2) 保存 ROC 曲线
@@ -1168,7 +1297,7 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
         y_prob=all_probs,
         class_names=class_names,
         save_dir=roc_dir,
-        epoch=epoch
+        epoch=epoch,
     )
 
     # 3) 保存样本级预测 CSV
@@ -1179,22 +1308,17 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
         y_prob=all_probs,
         class_names=class_names,
         save_dir=predictions_dir,
-        epoch=epoch
+        epoch=epoch,
     )
 
     # 4) 计算详细指标
     detailed_metrics = compute_detailed_classification_metrics(
-        y_true=all_targets,
-        y_pred=all_preds,
-        y_prob=all_probs,
-        class_names=class_names
+        y_true=all_targets, y_pred=all_preds, y_prob=all_probs, class_names=class_names
     )
     detailed_metrics["val_loss"] = float(losses.avg)
 
     detailed_metrics_json_path = save_detailed_metrics_json(
-        detailed_metrics=detailed_metrics,
-        save_dir=metrics_dir,
-        epoch=epoch
+        detailed_metrics=detailed_metrics, save_dir=metrics_dir, epoch=epoch
     )
 
     return {
@@ -1206,21 +1330,23 @@ def validate(val_loader, model, criterion, device, args, num_classes, class_name
         "confusion_matrix_csv_path": confusion_matrix_csv_path,
         "confusion_matrix_png_path": confusion_matrix_png_path,
         "val_predictions_csv_path": val_predictions_csv_path,
-        "detailed_metrics_json_path": detailed_metrics_json_path
+        "detailed_metrics_json_path": detailed_metrics_json_path,
     }
 
 
 # =========================================================
 # 8. 保存 checkpoint
 # =========================================================
-def save_checkpoint(state, is_best, save_dir='checkpoints', filename='checkpoint.pth.tar'):
+def save_checkpoint(
+    state, is_best, save_dir="checkpoints", filename="checkpoint.pth.tar"
+):
     """
     保存模型 checkpoint
     """
     os.makedirs(save_dir, exist_ok=True)
 
     filepath = os.path.join(save_dir, filename)
-    best_filepath = os.path.join(save_dir, 'model_best.pth.tar')
+    best_filepath = os.path.join(save_dir, "model_best.pth.tar")
 
     torch.save(state, filepath)
 
@@ -1240,7 +1366,8 @@ class Summary(Enum):
 
 class AverageMeter:
     """记录当前值、累计值、平均值"""
-    def __init__(self, name, fmt=':f', summary_type=Summary.AVERAGE):
+
+    def __init__(self, name, fmt=":f", summary_type=Summary.AVERAGE):
         self.name = name
         self.fmt = fmt
         self.summary_type = summary_type
@@ -1259,24 +1386,25 @@ class AverageMeter:
         self.avg = self.sum / self.count
 
     def __str__(self):
-        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
+        fmtstr = "{name} {val" + self.fmt + "} ({avg" + self.fmt + "})"
         return fmtstr.format(**self.__dict__)
 
     def summary(self):
         if self.summary_type is Summary.NONE:
-            return ''
+            return ""
         elif self.summary_type is Summary.AVERAGE:
-            return f'{self.name} {self.avg:.3f}'
+            return f"{self.name} {self.avg:.3f}"
         elif self.summary_type is Summary.SUM:
-            return f'{self.name} {self.sum:.3f}'
+            return f"{self.name} {self.sum:.3f}"
         elif self.summary_type is Summary.COUNT:
-            return f'{self.name} {self.count:.3f}'
+            return f"{self.name} {self.count:.3f}"
         else:
-            raise ValueError('invalid summary type')
+            raise ValueError("invalid summary type")
 
 
 class ProgressMeter:
     """保留原类，但当前主流程已不再使用这个冗长打印方式"""
+
     def __init__(self, num_batches, meters, prefix=""):
         self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
         self.meters = meters
@@ -1284,18 +1412,18 @@ class ProgressMeter:
 
     def display(self, batch):
         entries = [self.prefix + self.batch_fmtstr.format(batch)]
-        entries += [str(meter) for meter in self.meters if str(meter) != '']
-        print('\t'.join(entries))
+        entries += [str(meter) for meter in self.meters if str(meter) != ""]
+        print("\t".join(entries))
 
     def display_summary(self):
         entries = [" *"]
-        entries += [meter.summary() for meter in self.meters if meter.summary() != '']
-        print(' '.join(entries))
+        entries += [meter.summary() for meter in self.meters if meter.summary() != ""]
+        print(" ".join(entries))
 
     def _get_batch_fmtstr(self, num_batches):
         num_digits = len(str(num_batches))
-        fmt = '{:' + str(num_digits) + 'd}'
-        return '[' + fmt + '/' + fmt.format(num_batches) + ']'
+        fmt = "{:" + str(num_digits) + "d}"
+        return "[" + fmt + "/" + fmt.format(num_batches) + "]"
 
 
 # =========================================================
@@ -1321,5 +1449,5 @@ def accuracy(output, target, topk=(1,)):
         return res
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

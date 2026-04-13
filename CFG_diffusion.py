@@ -2185,7 +2185,7 @@ def main(args):
                 "start_epoch": start_epoch,
                 "initial_global_step": global_step,
                 "guidance_scale": args.guidance_scale,
-                "uncond_prob": args.uncond_prob,
+                "prob_uncond": args.uncond_prob,
             },
             "paths": {
                 "metrics_csv": metrics_csv_path,

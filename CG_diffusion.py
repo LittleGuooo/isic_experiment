@@ -1,402 +1,350 @@
 import argparse
-import json
-import math
 import os
 import random
 import shutil
-from collections import Counter, namedtuple
+import time
+import warnings
+from enum import Enum
+from collections import Counter
+
+import pandas as pd
+from PIL import Image
+
+import torch
+import torch.nn as nn
+import torch.optim
+import torch.utils.data
+from torch.optim.lr_scheduler import StepLR
+from torch.utils.data import Dataset, DataLoader, random_split
+
+import torchvision.models as models
+import torchvision.transforms as transforms
+
+import json
 from datetime import datetime
 
 import numpy as np
-import pandas as pd
-from PIL import Image
-from tqdm.auto import tqdm
-
-import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
-import torchvision.models as tv_models
 
-from accelerate import Accelerator
-from diffusers import (
-    DDPMPipeline,
-    DDIMPipeline,
-    DDPMScheduler,
-    DDIMScheduler,
-    UNet2DModel,
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    classification_report,
+    roc_curve,
+    auc,
+    ConfusionMatrixDisplay,
+    average_precision_score,
+    balanced_accuracy_score,
+    precision_score,
 )
-from diffusers.optimization import get_scheduler
+from sklearn.preprocessing import label_binarize
+from sklearn.model_selection import train_test_split
 
-from torchmetrics.image.fid import FrechetInceptionDistance
-from torchmetrics.image.kid import KernelInceptionDistance
+import matplotlib.pyplot as plt
+from tqdm.auto import tqdm  # 新增：使用 tqdm 改善训练/验证进度条
+
+# =========================================================
+# 1. 支持的模型名称
+# =========================================================
+model_names = sorted(
+    name
+    for name in models.__dict__
+    if name.islower() and not name.startswith("__") and callable(models.__dict__[name])
+)
 
 
 # =========================================================
-# 1. 参数
+# 2. 命令行参数
 # =========================================================
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="DDPM baseline for ISIC2018 dermoscopy images"
+        description="Classifier Guidance Training and Guided Sampling for ISIC2018 Task3"
     )
 
     # -------------------------
-    # 断点续训
+    # 1. 基础运行参数
     # -------------------------
     parser.add_argument(
-        "--resume_from_checkpoint",
-        type=str,
-        default=None,
-        help="指定 .pth.tar checkpoint 路径以从上次训练中断处继续，"
-        "会自动复用原实验文件夹（metrics/samples/fid 等目录接续写入）",
-    )
-
-    # -------------------------
-    # 运行模式
-    # -------------------------
-    parser.add_argument(
-        "--run_mode",
-        type=str,
-        default="train",
-        choices=["train", "val_only", "infer_only"],
-        help="train: 正常训练；val_only: 仅评估（同时评估 train/val）；infer_only: 仅推理生成图片",
-    )
-
-    # -------------------------
-    # only-infer 专用参数
-    # -------------------------
-    parser.add_argument(
-        "--infer_label",
-        type=str,
-        default=None,
-        choices=[
-            None,
-            "MEL",
-            "NV",
-            "BCC",
-            "AKIEC",
-            "BKL",
-            "DF",
-            "VASC",
-            "0",
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-        ],
-        help="infer_only 模式下指定生成类别；若模型是 conditional，则建议必须指定",
-    )
-    parser.add_argument(
-        "--infer_num_images",
+        "--seed",
+        default=42,
         type=int,
+        help="随机种子",
+    )
+    parser.add_argument(
+        "--gpu",
         default=0,
-        help="infer_only 模式下要生成的图片数量",
+        type=int,
+        help="使用的GPU编号，如0。未设置时自动选择cuda/cpu",
+    )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        type=str,
+        help="从 classifier checkpoint 恢复训练，例如 classifier_last.pth.tar",
     )
 
     # -------------------------
-    # 采样器选择
-    # -------------------------
-    parser.add_argument(
-        "--use_ddim_sampling",
-        action="store_true",
-        help="推理/评估时使用 DDIM 采样器替代 DDPM，可大幅加快生成速度",
-    )
-    parser.add_argument(
-        "--ddim_eta",
-        type=float,
-        default=0.0,
-        help="DDIM 随机性系数：0.0 为完全确定性采样，1.0 退化为 DDPM",
-    )
-
-    # -------------------------
-    # 数据路径
+    # 2. 数据路径
     # -------------------------
     parser.add_argument(
         "--train_gt_csv_path",
-        type=str,
         default="dataset/ISIC2018_Task3_Training_GroundTruth.csv",
-        help="训练集 GroundTruth CSV 路径，列格式：image,MEL,NV,BCC,AKIEC,BKL,DF,VASC",
+        type=str,
+        help="训练集标签CSV路径",
     )
     parser.add_argument(
         "--val_gt_csv_path",
-        type=str,
         default="dataset/ISIC2018_Task3_Validation_GroundTruth.csv",
-        help="验证集 GroundTruth CSV 路径，格式同训练集",
+        type=str,
+        help="验证集标签CSV路径",
     )
     parser.add_argument(
         "--train_img_dir",
-        type=str,
         default="dataset/ISIC2018_Task3_Training_Input",
-        help="训练集图片目录，图片命名格式：<image_id>.jpg",
+        type=str,
+        help="训练集图片文件夹路径",
     )
     parser.add_argument(
         "--val_img_dir",
-        type=str,
         default="dataset/ISIC2018_Task3_Validation_Input",
-        help="验证集图片目录，图片命名格式：<image_id>.jpg",
-    )
-
-    # -------------------------
-    # 数据过滤模式
-    # -------------------------
-    parser.add_argument(
-        "--data_mode",
         type=str,
-        default="all",
-        choices=["all", "single_label"],
-        help="all: 使用全部类别; single_label: 只使用一个类别（需配合 --target_label）",
+        help="验证集图片文件夹路径",
+    )
+
+    # 修复bug
+    parser.add_argument(
+        "--weights", default=None, type=str, help="path to classifier/model weights"
     )
     parser.add_argument(
-        "--target_label",
+        "--arch", default="ResNet50", type=str, help="classifier 架构名称"
+    )
+
+    # -------------------------
+    # 3. classifier 训练参数
+    # -------------------------
+    parser.add_argument(
+        "--classifier_epochs",
+        type=int,
+        default=30,
+        help="classifier 训练轮数",
+    )
+    parser.add_argument(
+        "--classifier_lr",
+        type=float,
+        default=1e-4,
+        help="classifier 学习率",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="classifier 训练 batch size",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="DataLoader 的 num_workers",
+    )
+    parser.add_argument(
+        "--classifier_save_every",
+        type=int,
+        default=5,
+        help="每隔多少个 epoch 额外保存一个 classifier checkpoint",
+    )
+
+    # -------------------------
+    # 4. diffusion / classifier guidance 参数
+    # -------------------------
+    parser.add_argument(
+        "--diffusion_checkpoint",
         type=str,
-        default=None,
-        choices=[
-            "MEL",
-            "NV",
-            "BCC",
-            "AKIEC",
-            "BKL",
-            "DF",
-            "VASC",
-            "0",
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-        ],
-        help="当 data_mode=single_label 时指定目标类别；"
-        "可用类别名（MEL/NV/BCC/AKIEC/BKL/DF/VASC）"
-        "或对应索引（0~6）",
+        required=True,
+        help="外部已训练 diffusion model 的 checkpoint 路径",
     )
-
-    # -------------------------
-    # 类别条件开关
-    # -------------------------
-    parser.add_argument(
-        "--use_class_conditioning",
-        action="store_true",
-        help="开启类别条件 DDPM。开启后，训练/采样时都会把类别标签作为条件输入模型。",
-    )
-
-    # -------------------------
-    # 输出目录
-    # -------------------------
-    parser.add_argument(
-        "--output_root",
-        type=str,
-        default="experiments",
-        help="所有实验结果的根目录，每次新运行会在此下创建带时间戳的子文件夹",
-    )
-
-    # -------------------------
-    # 图像参数
-    # -------------------------
     parser.add_argument(
         "--resolution",
         type=int,
         default=128,
-        help="训练和生成图像的分辨率，同时决定 UNet 输入尺寸",
-    )
-
-    # -------------------------
-    # 训练超参数
-    # -------------------------
-    parser.add_argument(
-        "--train_batch_size", type=int, default=32, help="训练时每个 GPU 的 batch size"
+        help="输入图像分辨率",
     )
     parser.add_argument(
-        "--eval_batch_size",
+        "--num_classes",
         type=int,
-        default=32,
-        help="评估/生成时的 batch size（同时用于 FID 采样和可视化样本生成）",
+        default=7,
+        help="类别数量，ISIC2018 Task3 为 7",
     )
     parser.add_argument(
-        "--dataloader_num_workers",
-        type=int,
-        default=4,
-        help="DataLoader 的并行读取进程数",
-    )
-    parser.add_argument(
-        "--num_epochs",
-        type=int,
-        default=40,
-        help="总训练轮数（含 resume 续训时已完成的 epoch）",
-    )
-    parser.add_argument(
-        "--gradient_accumulation_steps",
-        type=int,
-        default=1,
-        help="梯度累积步数，等效 batch size = train_batch_size × gradient_accumulation_steps",
-    )
-
-    # -------------------------
-    # 优化器参数（AdamW）
-    # -------------------------
-    parser.add_argument(
-        "--learning_rate", type=float, default=1e-4, help="AdamW 基础学习率"
-    )
-    parser.add_argument(
-        "--adam_beta1", type=float, default=0.95, help="AdamW 一阶矩估计的指数衰减率"
-    )
-    parser.add_argument(
-        "--adam_beta2", type=float, default=0.999, help="AdamW 二阶矩估计的指数衰减率"
-    )
-    parser.add_argument(
-        "--adam_weight_decay", type=float, default=1e-6, help="AdamW 权重衰减系数"
-    )
-    parser.add_argument(
-        "--adam_epsilon",
-        type=float,
-        default=1e-8,
-        help="AdamW 数值稳定性 epsilon，防止除零",
-    )
-
-    # -------------------------
-    # 学习率调度器
-    # -------------------------
-    parser.add_argument(
-        "--lr_scheduler",
-        type=str,
-        default="cosine",
-        help="学习率调度策略，传入 diffusers get_scheduler 的 name 参数"
-        "（如 cosine / linear / constant 等）",
-    )
-    parser.add_argument(
-        "--lr_warmup_steps",
-        type=int,
-        default=500,
-        help="学习率从 0 线性 warmup 到 learning_rate 所需的优化步数",
-    )
-
-    # -------------------------
-    # 混合精度
-    # -------------------------
-    parser.add_argument(
-        "--mixed_precision",
-        type=str,
-        default="fp16",
-        choices=["no", "fp16", "bf16"],
-        help="混合精度训练：no=全 fp32；fp16=半精度（适合消费级 GPU）；"
-        "bf16=BFloat16（适合 A100/H100）",
-    )
-
-    # -------------------------
-    # DDPM 噪声调度参数
-    # -------------------------
-    parser.add_argument(
-        "--ddpm_num_steps", type=int, default=1000, help="DDPM 训练时的总扩散步数 T"
-    )
-    parser.add_argument(
-        "--ddpm_num_inference_steps",
+        "--ddpm_num_steps",
         type=int,
         default=1000,
-        help="推理/采样时的去噪步数；使用 DDIM 时可设为 50~200 以加速",
+        help="DDPM 训练时的总扩散步数 T",
     )
     parser.add_argument(
         "--ddpm_beta_schedule",
         type=str,
         default="squaredcos_cap_v2",
-        help="噪声调度方案：linear（原始 DDPM）或 squaredcos_cap_v2（改进版）",
+        help="DDPM beta schedule",
     )
-
-    # -------------------------
-    # 保存与评估频率
-    # -------------------------
     parser.add_argument(
-        "--enable_per_class_metrics",
+        "--num_inference_steps",
+        type=int,
+        default=100,
+        help="DDIM 采样步数",
+    )
+    parser.add_argument(
+        "--ddim_eta",
+        type=float,
+        default=0.0,
+        help="DDIM eta",
+    )
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=3.0,
+        help="classifier guidance 强度",
+    )
+    parser.add_argument(
+        "--use_class_conditioning",
         action="store_true",
-        help="Whether to compute per-class FID/KID metrics (only effective for train split).",
+        help="扩散模型是否使用 class conditioning",
     )
     parser.add_argument(
-        "--save_images_epochs",
-        type=int,
-        default=10,
-        help="每隔多少 epoch 保存一批可视化生成样本",
+        "--time_scale_shift",
+        type=str,
+        default="default",
+        help="UNet 的 resnet_time_scale_shift 参数",
     )
     parser.add_argument(
-        "--save_model_epochs",
-        type=int,
-        default=1,
-        help="每隔多少 epoch 保存一次模型 checkpoint",
-    )
-    parser.add_argument(
-        "--eval_epochs",
-        type=int,
-        default=10,
-        help="每隔多少 epoch 计算一次 FID 和 Precision/Recall",
+        "--scheduler_config",
+        type=str,
+        default=None,
+        help="可选：DDIMScheduler.from_pretrained 所需目录；不填则手动构造 scheduler",
     )
 
     # -------------------------
-    # FID 采样数量
+    # 5. classifier 结构参数
     # -------------------------
     parser.add_argument(
-        "--num_fid_samples_train",
+        "--classifier_feat_size",
+        type=int,
+        default=4,
+        help="进入 AttentionPool2d 前特征图的空间尺寸",
+    )
+    parser.add_argument(
+        "--classifier_num_heads",
+        type=int,
+        default=8,
+        help="注意力池化 head 数",
+    )
+    parser.add_argument(
+        "--classifier_use_rotary",
+        action="store_true",
+        help="是否使用 RotAttentionPool2d",
+    )
+
+    # -------------------------
+    # 6. guided generation 参数
+    # -------------------------
+    parser.add_argument(
+        "--num_generate_total",
         type=int,
         default=1024,
-        help="用于计算训练集 FID 的生成图片数量；0 表示跳过训练集 FID",
+        help="总共生成多少张图像",
     )
     parser.add_argument(
-        "--num_fid_samples_val",
-        "--num_fid_samples_valid",
-        dest="num_fid_samples_val",
+        "--guided_gen_batch_size",
         type=int,
-        default=193,
-        help="用于计算验证集 FID 的生成图片数量；0 表示跳过验证集 FID。"
-        "（--num_fid_samples_valid 为兼容旧命令的别名）",
+        default=16,
+        help="guided sampling 时单次生成 batch size",
     )
 
     # -------------------------
-    # Manifold Improved Precision & Recall 参数
+    # 7. 评估参数
     # -------------------------
     parser.add_argument(
         "--ipr_k",
         type=int,
         default=3,
-        help="流形估计的 k 近邻数；k=3 为论文默认值，"
-        "值越大流形越宽松，precision 倾向偏高",
-    )
-
-    # -------------------------
-    # 随机种子（复现）
-    # -------------------------
-    parser.add_argument(
-        "--seed", type=int, default=42, help="全局随机种子，固定后可复现训练结果"
+        help="IPR 评估时的 top-k 参数",
     )
 
     return parser.parse_args()
 
 
+best_acc1 = 0.0
+
+
 # =========================================================
-# 2. 实验目录和日志工具
+# 3. 数据集定义
+# =========================================================
+class ISICResNetDataset(Dataset):
+    def __init__(self, gt_csv_path, img_dir, transform=None):
+        """
+        初始化 ISIC2018 Task3 单模态分类数据集
+        图片平铺在一个目录中，CSV 第一列为 image，后面是 7 个 one-hot / confidence 类别列
+        """
+        self.img_dir = img_dir
+        self.transform = transform
+
+        df = pd.read_csv(gt_csv_path)
+
+        self.class_columns = [c for c in df.columns if c != "image"]
+        self.df = df.reset_index(drop=True)
+
+        # 提前计算整数标签，后面统计类别分布会用到
+        self.labels = self.df[self.class_columns].values.argmax(axis=1).tolist()
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+
+        image_id = str(row["image"])
+        img_name = f"{image_id}.jpg"
+        img_path = os.path.join(self.img_dir, img_name)
+
+        image = Image.open(img_path).convert("RGB")
+
+        if self.transform is not None:
+            image = self.transform(image)
+
+        label_array = row[self.class_columns].values.astype(float)
+        label = torch.tensor(label_array.argmax(), dtype=torch.long)
+
+        sample_id = image_id
+
+        return image, label, sample_id
+
+
+# =========================================================
+# 4. 实验目录与日志工具函数
 # =========================================================
 def make_experiment_name(args):
+    """
+    生成规范实验名
+    """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    mode_tag = args.data_mode
-    label_tag = (
-        f"label_{args.target_label}"
-        if args.data_mode == "single_label"
-        else "all_labels"
-    )
-    cond_tag = "cond" if args.use_class_conditioning else "uncond"
-    exp_name = (
-        f"{timestamp}_ddpm_{cond_tag}_{mode_tag}_{label_tag}"
-        f"_res{args.resolution}_bs{args.train_batch_size}_seed{args.seed}"
-    )
+    weights_tag = args.weights if args.weights is not None else "scratch"
+    seed_tag = f"seed{args.seed}" if args.seed is not None else "seedNone"
+    exp_name = f"{timestamp}_{args.arch}_{weights_tag}_lr{args.classifier_lr}_bs{args.batch_size}_{seed_tag}"
     return exp_name
 
 
-def setup_experiment_folders(base_dir, exp_name):
-    exp_dir = os.path.join(base_dir, exp_name)
+def setup_experiment_folders(base_dir="experiments", exp_name=None):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    exp_dir = os.path.join(base_dir, exp_name or timestamp)
+
     checkpoints_dir = os.path.join(exp_dir, "checkpoints")
     metrics_dir = os.path.join(exp_dir, "metrics")
     metadata_dir = os.path.join(exp_dir, "metadata")
     samples_dir = os.path.join(exp_dir, "samples")
     fid_dir = os.path.join(exp_dir, "fid")
     fid_generated_dir = os.path.join(exp_dir, "fid_generated_images")
+    confusion_matrices_dir = os.path.join(exp_dir, "confusion_matrices")
 
     os.makedirs(checkpoints_dir, exist_ok=True)
     os.makedirs(metrics_dir, exist_ok=True)
@@ -404,6 +352,7 @@ def setup_experiment_folders(base_dir, exp_name):
     os.makedirs(samples_dir, exist_ok=True)
     os.makedirs(fid_dir, exist_ok=True)
     os.makedirs(fid_generated_dir, exist_ok=True)
+    os.makedirs(confusion_matrices_dir, exist_ok=True)
 
     return {
         "exp_dir": exp_dir,
@@ -413,15 +362,51 @@ def setup_experiment_folders(base_dir, exp_name):
         "samples_dir": samples_dir,
         "fid_dir": fid_dir,
         "fid_generated_dir": fid_generated_dir,
+        "confusion_matrices_dir": confusion_matrices_dir,
+    }
+
+
+def reuse_experiment_folders(exp_dir):
+    checkpoints_dir = os.path.join(exp_dir, "checkpoints")
+    metrics_dir = os.path.join(exp_dir, "metrics")
+    metadata_dir = os.path.join(exp_dir, "metadata")
+    samples_dir = os.path.join(exp_dir, "samples")
+    fid_dir = os.path.join(exp_dir, "fid")
+    fid_generated_dir = os.path.join(exp_dir, "fid_generated_images")
+    confusion_matrices_dir = os.path.join(exp_dir, "confusion_matrices")
+
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    os.makedirs(metrics_dir, exist_ok=True)
+    os.makedirs(metadata_dir, exist_ok=True)
+    os.makedirs(samples_dir, exist_ok=True)
+    os.makedirs(fid_dir, exist_ok=True)
+    os.makedirs(fid_generated_dir, exist_ok=True)
+    os.makedirs(confusion_matrices_dir, exist_ok=True)
+
+    return {
+        "exp_dir": exp_dir,
+        "checkpoints_dir": checkpoints_dir,
+        "metrics_dir": metrics_dir,
+        "metadata_dir": metadata_dir,
+        "samples_dir": samples_dir,
+        "fid_dir": fid_dir,
+        "fid_generated_dir": fid_generated_dir,
+        "confusion_matrices_dir": confusion_matrices_dir,
     }
 
 
 def save_json(data, json_path):
+    """
+    保存 JSON 文件
+    """
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 
 def update_epoch_metrics_csv(metrics_csv_path, row_dict):
+    """
+    追加保存每轮汇总指标到 CSV
+    """
     row_df = pd.DataFrame([row_dict])
     if os.path.exists(metrics_csv_path):
         old_df = pd.read_csv(metrics_csv_path)
@@ -432,1471 +417,576 @@ def update_epoch_metrics_csv(metrics_csv_path, row_dict):
 
 
 def update_epoch_metrics_json(metrics_json_path, row_dict):
+    """
+    追加保存每轮汇总指标到 JSON
+    """
     if os.path.exists(metrics_json_path):
         with open(metrics_json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     else:
         data = []
+
     data.append(row_dict)
+
     with open(metrics_json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 
-def count_labels_from_indices(labels, indices, class_names):
-    counter = Counter([labels[i] for i in indices])
+def save_detailed_metrics_json(detailed_metrics, save_dir, epoch):
+    """
+    保存每个 epoch 的详细指标（包括 per-class 指标）
+    """
+    json_path = os.path.join(save_dir, f"epoch_{epoch:03d}_detailed_metrics.json")
+    save_json(detailed_metrics, json_path)
+    return json_path
+
+
+import seaborn as sns
+
+
+def save_confusion_matrix_artifacts(
+    y_true,
+    y_pred,
+    class_names,
+    save_dir,
+    epoch,
+):
+    os.makedirs(save_dir, exist_ok=True)
+
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
+    cm_df = pd.DataFrame(cm, index=class_names, columns=class_names)
+
+    cm_csv_path = os.path.join(save_dir, f"confusion_matrix_epoch_{epoch:03d}.csv")
+    cm_png_path = os.path.join(save_dir, f"confusion_matrix_epoch_{epoch:03d}.png")
+
+    cm_df.to_csv(cm_csv_path, encoding="utf-8-sig")
+
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm_df, annot=True, fmt="d", cmap="Blues")
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title(f"Confusion Matrix - Epoch {epoch}")
+    plt.tight_layout()
+    plt.savefig(cm_png_path, dpi=200)
+    plt.close()
+
+    return cm_csv_path, cm_png_path
+
+
+def save_multiclass_roc_artifacts(y_true, y_prob, class_names, save_dir, epoch):
+    """
+    保存多分类 ROC 曲线图及其原始点数据
+    """
+    num_classes = len(class_names)
+    y_true_bin = label_binarize(y_true, classes=np.arange(num_classes))
+
+    roc_points = {
+        "epoch": epoch,
+        "num_classes": num_classes,
+        "class_names": class_names,
+        "per_class": {},
+        "macro_average_auc": None,
+    }
+
+    plt.figure(figsize=(10, 8))
+
+    valid_class_count = 0
+    all_fpr = []
+
+    for i in range(num_classes):
+        class_name = class_names[i]
+        y_true_i = y_true_bin[:, i]
+        y_prob_i = y_prob[:, i]
+
+        unique_vals = np.unique(y_true_i)
+        if len(unique_vals) < 2:
+            continue
+
+        fpr, tpr, _ = roc_curve(y_true_i, y_prob_i)
+        roc_auc = auc(fpr, tpr)
+
+        roc_points["per_class"][class_name] = {
+            "fpr": fpr.tolist(),
+            "tpr": tpr.tolist(),
+            "auc": float(roc_auc),
+        }
+
+        plt.plot(fpr, tpr, lw=2, label=f"{class_name} (AUC={roc_auc:.3f})")
+        valid_class_count += 1
+        all_fpr.append(fpr)
+
+    if valid_class_count > 0:
+        mean_fpr = np.unique(np.concatenate(all_fpr))
+        mean_tpr = np.zeros_like(mean_fpr)
+
+        valid_for_macro = 0
+        for i in range(num_classes):
+            class_name = class_names[i]
+            if class_name not in roc_points["per_class"]:
+                continue
+
+            fpr = np.array(roc_points["per_class"][class_name]["fpr"])
+            tpr = np.array(roc_points["per_class"][class_name]["tpr"])
+            mean_tpr += np.interp(mean_fpr, fpr, tpr)
+            valid_for_macro += 1
+
+        if valid_for_macro > 0:
+            mean_tpr /= valid_for_macro
+            macro_auc = auc(mean_fpr, mean_tpr)
+            roc_points["macro_average_auc"] = float(macro_auc)
+
+            plt.plot(
+                mean_fpr,
+                mean_tpr,
+                linestyle="--",
+                linewidth=3,
+                color="navy",
+                label=f"Macro-average ROC (AUC={macro_auc:.3f})",
+            )
+
+    plt.plot([0, 1], [0, 1], "k--", lw=1)
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"ROC Curves - Epoch {epoch}")
+    plt.legend(loc="lower right", fontsize=8)
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+
+    roc_png_path = os.path.join(save_dir, f"epoch_{epoch:03d}_roc.png")
+    plt.savefig(roc_png_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    roc_json_path = os.path.join(save_dir, f"epoch_{epoch:03d}_roc_points.json")
+    save_json(roc_points, roc_json_path)
+
+    return roc_png_path, roc_json_path
+
+
+def save_val_predictions_csv(
+    sample_ids, y_true, y_pred, y_prob, class_names, save_dir, epoch
+):
+    """
+    保存样本级验证预测结果
+    每个样本一行：
+    case_id, y_true, y_pred, prob_MEL, prob_NV, ...
+    """
+    data = {
+        "case_id": list(sample_ids),
+        "y_true": y_true.tolist(),
+        "y_pred": y_pred.tolist(),
+    }
+
+    num_classes = y_prob.shape[1]
+    for i in range(num_classes):
+        data[f"prob_{class_names[i]}"] = y_prob[:, i].tolist()
+
+    pred_df = pd.DataFrame(data)
+    pred_csv_path = os.path.join(save_dir, f"val_predictions_epoch_{epoch:02d}.csv")
+    pred_df.to_csv(pred_csv_path, index=False, encoding="utf-8-sig")
+    return pred_csv_path
+
+
+def count_labels_from_dataset(labels, class_names):
+    """
+    统计一个数据集里各类别样本数
+    """
+    counter = Counter(labels)
     count_dict = {}
     for class_idx, class_name in enumerate(class_names):
         count_dict[class_name] = int(counter.get(class_idx, 0))
     return count_dict
 
 
-def format_count_ratio_dict(count_dict):
-    total = sum(count_dict.values())
-    formatted = {}
-    for class_name, count in count_dict.items():
-        ratio = (count / total * 100.0) if total > 0 else 0.0
-        formatted[class_name] = f"{count} ({ratio:.2f}%)"
-    return formatted
-
-
 def print_class_distribution(title, count_dict):
+    """
+    打印类别统计结果
+    """
     print(f"\n{'=' * 60}")
     print(title)
     print(f"{'=' * 60}")
-    total_count = sum(count_dict.values())
+    total_count = 0
     for class_name, count in count_dict.items():
-        ratio = (count / total_count * 100.0) if total_count > 0 else 0.0
-        print(f"{class_name}: {count} ({ratio:.2f}%)")
-    print(f"Total: {total_count} (100.00%)")
+        print(f"{class_name}: {count}")
+        total_count += count
+    print(f"Total: {total_count}")
     print(f"{'=' * 60}\n")
 
 
-def save_checkpoint(state, is_best, save_dir, filename="last.pth.tar"):
-    os.makedirs(save_dir, exist_ok=True)
-    filepath = os.path.join(save_dir, filename)
-    best_filepath = os.path.join(save_dir, "model_best.pth.tar")
-    torch.save(state, filepath)
-    if is_best:
-        shutil.copyfile(filepath, best_filepath)
-
-
-def disable_pipeline_progress_bar(pipeline):
-    if hasattr(pipeline, "set_progress_bar_config"):
-        pipeline.set_progress_bar_config(disable=True)
-
-
-def save_diffusers_model_index_copy(exp_dir, metadata_dir):
-    src = os.path.join(exp_dir, "model_index.json")
-    dst = os.path.join(metadata_dir, "diffusers_pipeline_model_index.json")
-    if os.path.exists(src):
-        shutil.copyfile(src, dst)
-    return dst
-
-
-def recover_exp_dir_from_checkpoint(checkpoint_path, checkpoint_data):
-    if "exp_dir" in checkpoint_data:
-        return checkpoint_data["exp_dir"]
-    checkpoints_dir = os.path.dirname(os.path.abspath(checkpoint_path))
-    exp_dir = os.path.dirname(checkpoints_dir)
-    return exp_dir
-
-
-def normalize_label_to_index_and_name(target_label, class_names):
+def format_progress_bar(current, total, prefix="", width=30):
     """
-    把类别名 / 类别索引统一转成 (idx, name)
+    生成简单单行进度条
     """
-    if target_label is None:
-        return None, None
-
-    if str(target_label).isdigit():
-        target_idx = int(target_label)
-        if target_idx < 0 or target_idx >= len(class_names):
-            raise ValueError(
-                f"target_label index {target_idx} out of range [0, {len(class_names)-1}]"
-            )
-        return target_idx, class_names[target_idx]
-
-    if target_label not in class_names:
-        raise ValueError(
-            f"target_label '{target_label}' not found in class names: {class_names}"
-        )
-    return class_names.index(target_label), target_label
+    ratio = current / total
+    filled = int(width * ratio)
+    bar = "=" * filled + "." * (width - filled)
+    return f"{prefix} [{bar}] {current}/{total}"
 
 
-def make_runtime_run_name(args):
+def print_single_line_progress(current, total, prefix, extra_info):
     """
-    为 only-val / only-infer 生成本次运行目录名
+    单行更新进度，避免输出一堆乱日志
+    说明：保留这个函数，但主流程已改为 tqdm，不再使用
     """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ckpt_tag = "no_ckpt"
-    if args.resume_from_checkpoint is not None:
-        ckpt_tag = os.path.splitext(os.path.basename(args.resume_from_checkpoint))[0]
-
-    sampler_tag = "ddim" if args.use_ddim_sampling else "ddpm"
-
-    if args.run_mode == "val_only":
-        return (
-            f"{timestamp}_val_{ckpt_tag}_{sampler_tag}"
-            f"_steps{args.ddpm_num_inference_steps}_seed{args.seed}"
-        )
-
-    if args.run_mode == "infer_only":
-        label_tag = str(args.infer_label) if args.infer_label is not None else "none"
-        return (
-            f"{timestamp}_infer_{ckpt_tag}_{label_tag}_{sampler_tag}"
-            f"_n{args.infer_num_images}_steps{args.ddpm_num_inference_steps}_seed{args.seed}"
-        )
-
-    return timestamp
+    line = f"\r{format_progress_bar(current, total, prefix=prefix)} | {extra_info}"
+    print(line, end="", flush=True)
+    if current == total:
+        print("")
 
 
-def setup_runtime_run_folders(exp_dir, run_mode, run_name):
+def safe_div(a, b):
     """
-    在 checkpoint 对应实验目录下创建：
-    - run_vals/<run_name>/
-    - run_infers/<run_name>/
+    安全除法，避免 0 除错误
     """
-    if run_mode == "val_only":
-        root_dir = os.path.join(exp_dir, "run_vals")
-    elif run_mode == "infer_only":
-        root_dir = os.path.join(exp_dir, "run_infers")
+    return float(a) / float(b) if b != 0 else float("nan")
+
+
+def compute_auc80(y_true_binary, y_score, sensitivity_low=0.8):
+    """
+    计算 Melanoma 专用 AUC80：
+    只积分 sensitivity(TPR) 在 [0.8, 1.0] 区间上的 ROC 面积
+
+    这里返回“原始部分 ROC 面积”，不做额外归一化。
+    """
+    unique_vals = np.unique(y_true_binary)
+    if len(unique_vals) < 2:
+        return float("nan")
+
+    fpr, tpr, _ = roc_curve(y_true_binary, y_score)
+
+    # 选出 TPR >= 0.8 的部分
+    keep_idx = np.where(tpr >= sensitivity_low)[0]
+    if len(keep_idx) == 0:
+        return 0.0
+
+    start_idx = keep_idx[0]
+
+    # 如果第一个满足条件的点不是刚好 0.8，则插值补一个边界点
+    if tpr[start_idx] > sensitivity_low and start_idx > 0:
+        x0, y0 = fpr[start_idx - 1], tpr[start_idx - 1]
+        x1, y1 = fpr[start_idx], tpr[start_idx]
+        if y1 != y0:
+            interp_fpr = x0 + (sensitivity_low - y0) * (x1 - x0) / (y1 - y0)
+        else:
+            interp_fpr = x1
+
+        fpr_part = np.concatenate([[interp_fpr], fpr[start_idx:]])
+        tpr_part = np.concatenate([[sensitivity_low], tpr[start_idx:]])
     else:
-        raise ValueError(f"Unsupported run_mode for runtime folder: {run_mode}")
+        fpr_part = fpr[start_idx:]
+        tpr_part = tpr[start_idx:]
 
-    run_dir = os.path.join(root_dir, run_name)
-    metrics_dir = os.path.join(run_dir, "metrics")
-    generated_dir = os.path.join(run_dir, "generated_images")
-    metadata_dir = os.path.join(run_dir, "metadata")
+    if len(fpr_part) < 2:
+        return 0.0
 
-    os.makedirs(root_dir, exist_ok=True)
-    os.makedirs(run_dir, exist_ok=True)
-    os.makedirs(metrics_dir, exist_ok=True)
-    os.makedirs(generated_dir, exist_ok=True)
-    os.makedirs(metadata_dir, exist_ok=True)
-
-    return {
-        "root_dir": root_dir,
-        "run_dir": run_dir,
-        "metrics_dir": metrics_dir,
-        "generated_dir": generated_dir,
-        "metadata_dir": metadata_dir,
-        "run_config_json": os.path.join(run_dir, "run_config.json"),
-        "run_summary_json": os.path.join(run_dir, "run_summary.json"),
-    }
+    return float(auc(fpr_part, tpr_part))
 
 
-def sync_experiment_metadata_for_resume(
-    experiment_metadata,
-    args,
-    start_epoch,
-    global_step,
-):
+def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names):
     """
-    恢复训练时，把当前实际运行参数写回 experiment_metadata.json
-    只更新“当前状态视图”，不篡改历史 checkpoint 本身。
+    计算你要求的所有额外指标：
+    1. normalized multi-class accuracy metric = macro recall = balanced accuracy
+    2. sensitivity / specificity / accuracy / AUC / mAP / F1 / PPV / NPV
+    3. Melanoma AUC80
+    4. average AUC across all diagnoses
+    5. malignant vs benign AUC
     """
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    experiment_metadata["updated_time"] = now_str
-    experiment_metadata["resume_from_checkpoint"] = args.resume_from_checkpoint
-    experiment_metadata["last_runtime_args"] = vars(args)
-
-    # 更新 data 配置
-    if "data" not in experiment_metadata:
-        experiment_metadata["data"] = {}
-    experiment_metadata["data"].update(
-        {
-            "train_gt_csv_path": args.train_gt_csv_path,
-            "val_gt_csv_path": args.val_gt_csv_path,
-            "train_img_dir": args.train_img_dir,
-            "val_img_dir": args.val_img_dir,
-            "data_mode": args.data_mode,
-            "target_label": args.target_label,
-            "use_class_conditioning": args.use_class_conditioning,
-        }
-    )
-
-    # 更新 model 配置
-    if "model" not in experiment_metadata:
-        experiment_metadata["model"] = {}
-    experiment_metadata["model"].update(
-        {
-            "resolution": args.resolution,
-            "ddpm_num_steps": args.ddpm_num_steps,
-            "ddpm_num_inference_steps": args.ddpm_num_inference_steps,
-            "ddpm_beta_schedule": args.ddpm_beta_schedule,
-            "use_ddim_sampling": args.use_ddim_sampling,
-            "ddim_eta": args.ddim_eta,
-            "use_class_conditioning": args.use_class_conditioning,
-        }
-    )
-
-    # 更新 training 配置
-    if "training" not in experiment_metadata:
-        experiment_metadata["training"] = {}
-    experiment_metadata["training"].update(
-        {
-            "train_batch_size": args.train_batch_size,
-            "eval_batch_size": args.eval_batch_size,
-            "num_epochs": args.num_epochs,
-            "learning_rate": args.learning_rate,
-            "gradient_accumulation_steps": args.gradient_accumulation_steps,
-            "start_epoch": start_epoch,
-            "initial_global_step": global_step,
-        }
-    )
-
-    return experiment_metadata
-
-
-# =========================================================
-# 3. 数据集
-# =========================================================
-class ISIC2018DDPMDataset(Dataset):
-    def __init__(
-        self, gt_csv_path, img_dir, transform=None, data_mode="all", target_label=None
-    ):
-        self.img_dir = img_dir
-        self.transform = transform
-        self.data_mode = data_mode
-        self.target_label = target_label
-
-        df = pd.read_csv(gt_csv_path)
-        self.class_columns = [c for c in df.columns if c != "image"]
-        df["label_int"] = df[self.class_columns].values.argmax(axis=1)
-
-        if data_mode == "single_label":
-            if target_label is None:
-                raise ValueError(
-                    "When data_mode='single_label', --target_label must be provided."
-                )
-            if str(target_label).isdigit():
-                target_label_idx = int(target_label)
-            else:
-                if target_label not in self.class_columns:
-                    raise ValueError(
-                        f"target_label '{target_label}' not found in class columns: {self.class_columns}"
-                    )
-                target_label_idx = self.class_columns.index(target_label)
-            df = df[df["label_int"] == target_label_idx].copy().reset_index(drop=True)
-            self.selected_label_idx = target_label_idx
-            self.selected_label_name = self.class_columns[target_label_idx]
-        else:
-            self.selected_label_idx = None
-            self.selected_label_name = None
-
-        self.df = df.reset_index(drop=True)
-        self.labels = self.df["label_int"].astype(int).tolist()
-
-    def __len__(self):
-        return len(self.df)
-
-    def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        image_id = str(row["image"])
-        img_path = os.path.join(self.img_dir, f"{image_id}.jpg")
-        image = Image.open(img_path).convert("RGB")
-        if self.transform is not None:
-            image = self.transform(image)
-        label = int(row["label_int"])
-        sample_id = image_id
-        return {"input": image, "label": label, "sample_id": sample_id}
-
-
-# =========================================================
-# 4. FID / 采样 / per-class 工具
-# =========================================================
-def tensor_to_uint8_for_fid(x):
-    x = ((x.clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8)
-    return x
-
-
-def uint8_tensor_to_pil(x_uint8):
-    arr = x_uint8.permute(1, 2, 0).cpu().numpy()
-    return Image.fromarray(arr)
-
-
-def build_sampling_scheduler(noise_scheduler, use_ddim_sampling=False):
-    if use_ddim_sampling:
-        return DDIMScheduler.from_config(noise_scheduler.config)
-    return DDPMScheduler.from_config(noise_scheduler.config)
-
-
-def allocate_samples_by_ratio(count_dict, total_samples):
-    """
-    按真实数据分布比例，把 total_samples 分配到每个类别。
-    使用“最大余数法”，保证：
-    1. 总和严格等于 total_samples
-    2. 比例尽量接近真实分布
-    """
-    class_names = list(count_dict.keys())
-    total_count = sum(count_dict.values())
-
-    if total_samples <= 0:
-        return {k: 0 for k in class_names}
-
-    if total_count == 0:
-        return {k: 0 for k in class_names}
-
-    exact = {}
-    floor_alloc = {}
-    remainders = []
-
-    for class_name in class_names:
-        value = count_dict[class_name] / total_count * total_samples
-        exact[class_name] = value
-        floor_alloc[class_name] = int(math.floor(value))
-        remainders.append((value - floor_alloc[class_name], class_name))
-
-    current_sum = sum(floor_alloc.values())
-    remaining = total_samples - current_sum
-
-    remainders.sort(key=lambda x: x[0], reverse=True)
-    for i in range(remaining):
-        _, class_name = remainders[i]
-        floor_alloc[class_name] += 1
-
-    return floor_alloc
-
-
-@torch.no_grad()
-def collect_real_images_by_class(
-    real_loader, device, class_names, target_counts_by_class
-):
-    """
-    按类别收集真实图像，返回 uint8 张量字典。
-    每个类别最多收集 target_counts_by_class[class_name] 张。
-    """
-    class_to_idx = {name: idx for idx, name in enumerate(class_names)}
-    need_by_idx = {
-        class_to_idx[name]: int(cnt) for name, cnt in target_counts_by_class.items()
-    }
-    collected = {idx: [] for idx in range(len(class_names))}
-    count_now = {idx: 0 for idx in range(len(class_names))}
-
-    total_need = sum(need_by_idx.values())
-    if total_need <= 0:
-        return {
-            name: torch.empty(0, 3, 0, 0, dtype=torch.uint8, device=device)
-            for name in class_names
-        }
-
-    progress_bar = tqdm(
-        total=total_need, desc="Collect real images by class", leave=True
-    )
-    for batch in real_loader:
-        images = batch["input"].to(device)
-        labels = batch["label"]
-
-        images_uint8 = tensor_to_uint8_for_fid(images)
-
-        for i in range(images_uint8.size(0)):
-            label_idx = int(labels[i])
-            if label_idx not in need_by_idx:
-                continue
-            if count_now[label_idx] >= need_by_idx[label_idx]:
-                continue
-            collected[label_idx].append(images_uint8[i : i + 1])
-            count_now[label_idx] += 1
-            progress_bar.update(1)
-
-        if all(count_now[idx] >= need_by_idx[idx] for idx in need_by_idx):
-            break
-
-    progress_bar.close()
-
-    result = {}
-    for class_name, class_idx in class_to_idx.items():
-        if len(collected[class_idx]) == 0:
-            result[class_name] = torch.empty(
-                0, 3, 0, 0, dtype=torch.uint8, device=device
-            )
-        else:
-            result[class_name] = torch.cat(collected[class_idx], dim=0)
-    return result
-
-
-@torch.no_grad()
-def sample_images_with_model(
-    model,
-    sampling_scheduler,
-    device,
-    resolution,
-    batch_size,
-    num_inference_steps,
-    generator,
-    use_class_conditioning=False,
-    class_labels=None,
-    ddim_eta=0.0,
-):
-    try:
-        sampling_scheduler.set_timesteps(num_inference_steps, device=device)
-    except TypeError:
-        sampling_scheduler.set_timesteps(num_inference_steps)
-
-    sample = torch.randn(
-        (batch_size, model.config.in_channels, resolution, resolution),
-        generator=generator,
-        device=device,
-    )
-
-    for t in sampling_scheduler.timesteps:
-        model_input = sample
-        if hasattr(sampling_scheduler, "scale_model_input"):
-            model_input = sampling_scheduler.scale_model_input(model_input, t)
-
-        if use_class_conditioning and class_labels is not None:
-            noise_pred = model(model_input, t, class_labels=class_labels).sample
-        else:
-            noise_pred = model(model_input, t).sample
-
-        if isinstance(sampling_scheduler, DDIMScheduler):
-            step_output = sampling_scheduler.step(
-                noise_pred, t, sample, eta=ddim_eta, generator=generator
-            )
-        else:
-            step_output = sampling_scheduler.step(
-                noise_pred, t, sample, generator=generator
-            )
-
-        sample = step_output.prev_sample
-
-    return tensor_to_uint8_for_fid(sample)
-
-
-@torch.no_grad()
-def generate_images_by_class_for_metrics(
-    accelerator,
-    model,
-    noise_scheduler,
-    class_names,
-    target_counts_by_class,
-    fake_save_root,
-    save_dir_name,
-    resolution,
-    eval_batch_size,
-    num_inference_steps,
-    use_ddim_sampling=False,
-    ddim_eta=0.0,
-    use_class_conditioning=False,
-):
-    """
-    按类别生成假图。
-    - overall 指标会把各类假图拼接起来
-    - per-class 指标直接用各类各自的 fake tensor
-    """
-    device = accelerator.device
-    generated_dir = os.path.join(fake_save_root, save_dir_name)
-    os.makedirs(generated_dir, exist_ok=True)
-
-    sampling_scheduler = build_sampling_scheduler(
-        noise_scheduler=noise_scheduler, use_ddim_sampling=use_ddim_sampling
-    )
-
-    fake_by_class = {}
-    total_need = sum(target_counts_by_class.values())
-    progress_bar = tqdm(
-        total=total_need, desc=f"Generate fake images ({save_dir_name})", leave=True
-    )
-
-    global_counter = 0
-    for class_idx, class_name in enumerate(class_names):
-        target_count = int(target_counts_by_class.get(class_name, 0))
-        if target_count <= 0:
-            fake_by_class[class_name] = torch.empty(
-                0, 3, 0, 0, dtype=torch.uint8, device=device
-            )
-            continue
-
-        class_save_dir = os.path.join(generated_dir, class_name)
-        os.makedirs(class_save_dir, exist_ok=True)
-
-        cur_fake_batches = []
-        produced = 0
-        batch_id = 0
-
-        while produced < target_count:
-            cur_bs = min(eval_batch_size, target_count - produced)
-
-            generator = torch.Generator(device=device).manual_seed(
-                1000 + class_idx * 100000 + batch_id
-            )
-
-            if use_class_conditioning:
-                class_labels = torch.full(
-                    (cur_bs,), fill_value=class_idx, device=device, dtype=torch.long
-                )
-            else:
-                class_labels = None
-
-            fake_uint8 = sample_images_with_model(
-                model=model,
-                sampling_scheduler=sampling_scheduler,
-                device=device,
-                resolution=resolution,
-                batch_size=cur_bs,
-                num_inference_steps=num_inference_steps,
-                generator=generator,
-                use_class_conditioning=use_class_conditioning,
-                class_labels=class_labels,
-                ddim_eta=ddim_eta,
-            )
-
-            cur_fake_batches.append(fake_uint8)
-
-            for i in range(fake_uint8.size(0)):
-                pil_img = uint8_tensor_to_pil(fake_uint8[i])
-                pil_img.save(
-                    os.path.join(class_save_dir, f"fid_sample_{global_counter:05d}.png")
-                )
-                global_counter += 1
-
-            produced += cur_bs
-            batch_id += 1
-            progress_bar.update(cur_bs)
-
-        fake_by_class[class_name] = torch.cat(cur_fake_batches, dim=0)
-
-    progress_bar.close()
-    return fake_by_class, generated_dir
-
-
-def concat_class_tensors(
-    class_tensor_dict, class_names, target_counts_by_class, device
-):
-    """
-    按 class_names 的顺序把 per-class tensor 拼起来，形成 overall tensor。
-    """
-    tensors = []
-    for class_name in class_names:
-        count = int(target_counts_by_class.get(class_name, 0))
-        if count <= 0:
-            continue
-        ten = class_tensor_dict[class_name]
-        if ten.size(0) > 0:
-            tensors.append(ten[:count])
-
-    if len(tensors) == 0:
-        return torch.empty(0, 3, 0, 0, dtype=torch.uint8, device=device)
-    return torch.cat(tensors, dim=0)
-
-
-@torch.no_grad()
-def compute_fid_from_real_and_fake(real_images_uint8, fake_images_uint8, device):
-    if real_images_uint8 is None or fake_images_uint8 is None:
-        return None
-    if real_images_uint8.size(0) == 0 or fake_images_uint8.size(0) == 0:
-        return None
-
-    fid = FrechetInceptionDistance(feature=2048, normalize=False).to(device)
-
-    # 分 batch 计算fid，避免一次性把所有图像送入 Inception 模型导致 OOM
-    batch_size = 32
-
-    # --- real ---
-    for i in range(0, real_images_uint8.size(0), batch_size):
-        fid.update(real_images_uint8[i : i + batch_size], real=True)
-
-    # --- fake ---
-    fake_images_uint8 = fake_images_uint8[: real_images_uint8.size(0)]
-    for i in range(0, fake_images_uint8.size(0), batch_size):
-        fid.update(fake_images_uint8[i : i + batch_size], real=False)
-
-    return float(fid.compute().item())
-
-
-@torch.no_grad()
-def compute_kid_from_real_and_fake(
-    real_images_uint8,
-    fake_images_uint8,
-    device,
-    subsets=50,
-    subset_size=50,
-):
-    if real_images_uint8 is None or fake_images_uint8 is None:
-        return None, None
-    if real_images_uint8.size(0) == 0 or fake_images_uint8.size(0) == 0:
-        return None, None
-
-    valid_subset_size = min(
-        subset_size, real_images_uint8.size(0), fake_images_uint8.size(0)
-    )
-    if valid_subset_size < 2:
-        return None, None
-
-    kid = KernelInceptionDistance(
-        feature=2048,
-        subsets=subsets,
-        subset_size=valid_subset_size,
-        normalize=False,
-    ).to(device)
-
-    batch_size = 32
-
-    for i in range(0, real_images_uint8.size(0), batch_size):
-        kid.update(real_images_uint8[i : i + batch_size], real=True)
-
-    fake_images_uint8 = fake_images_uint8[: real_images_uint8.size(0)]
-    for i in range(0, fake_images_uint8.size(0), batch_size):
-        kid.update(fake_images_uint8[i : i + batch_size], real=False)
-
-    kid_mean, kid_std = kid.compute()
-    return float(kid_mean.item()), float(kid_std.item())
-
-
-# =========================================================
-# 5. Manifold Improved Precision & Recall
-# =========================================================
-Manifold = namedtuple("Manifold", ["features", "radii"])
-
-
-def _build_vgg16_feature_extractor(device):
-    vgg = tv_models.vgg16(weights=tv_models.VGG16_Weights.IMAGENET1K_V1)
-    vgg = vgg.to(device).eval()
-    return vgg
-
-
-@torch.no_grad()
-def _extract_vgg16_features(images_uint8, vgg16, device, batch_size=64):
-    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
-
-    all_feats = []
-    n = images_uint8.shape[0]
-    for start in range(0, n, batch_size):
-        batch = images_uint8[start : start + batch_size].to(device)
-        batch = batch.float() / 255.0
-        batch = F.interpolate(
-            batch, size=(224, 224), mode="bilinear", align_corners=False
-        )
-        batch = (batch - mean) / std
-        conv_feat = vgg16.features(batch)
-        conv_feat = vgg16.avgpool(conv_feat)
-        conv_feat = conv_feat.view(conv_feat.size(0), -1)
-        fc_feat = vgg16.classifier[:4](conv_feat)
-        all_feats.append(fc_feat.cpu().numpy())
-
-    return np.concatenate(all_feats, axis=0)
-
-
-def _compute_pairwise_distances(X, Y=None):
-    X = X.astype(np.float64)
-    X_sq = np.sum(X**2, axis=1, keepdims=True)
-
-    if Y is None:
-        Y = X
-        Y_sq = X_sq
-    else:
-        Y = Y.astype(np.float64)
-        Y_sq = np.sum(Y**2, axis=1, keepdims=True)
-
-    diff_sq = X_sq + Y_sq.T - 2.0 * X.dot(Y.T)
-    diff_sq = np.clip(diff_sq, 0, None)
-    return np.sqrt(diff_sq)
-
-
-def _distances_to_radii(distances, k):
-    n = distances.shape[0]
-    radii = np.zeros(n)
-    for i in range(n):
-        kth_idx = np.argpartition(distances[i], k + 1)[: k + 1]
-        radii[i] = distances[i][kth_idx].max()
-    return radii
-
-
-def _build_manifold(features, k):
-    distances = _compute_pairwise_distances(features)
-    radii = _distances_to_radii(distances, k)
-    return Manifold(features, radii)
-
-
-def _compute_precision_or_recall(manifold_ref, feats_query):
-    dist = _compute_pairwise_distances(manifold_ref.features, feats_query)
-    in_manifold = (dist < manifold_ref.radii[:, None]).any(axis=0)
-    return float(in_manifold.mean())
-
-
-@torch.no_grad()
-def compute_manifold_precision_recall(
-    real_images_uint8, fake_images_uint8, device, k=3, vgg_batch_size=64
-):
-    if real_images_uint8 is None or fake_images_uint8 is None:
-        return None, None
-    if real_images_uint8.size(0) == 0 or fake_images_uint8.size(0) == 0:
-        return None, None
-
-    print("  [IPR] Loading VGG16 for Improved Precision/Recall...")
-    vgg16 = _build_vgg16_feature_extractor(device)
-
-    print("  [IPR] Extracting features for real images...")
-    real_feats = _extract_vgg16_features(
-        real_images_uint8, vgg16, device, batch_size=vgg_batch_size
-    )
-
-    print("  [IPR] Extracting features for fake images...")
-    n_real = real_images_uint8.size(0)
-    fake_feats = _extract_vgg16_features(
-        fake_images_uint8[:n_real], vgg16, device, batch_size=vgg_batch_size
-    )
-
-    print("  [IPR] Building manifolds (k={})...".format(k))
-    manifold_real = _build_manifold(real_feats, k)
-    manifold_fake = _build_manifold(fake_feats, k)
-
-    print("  [IPR] Computing precision and recall...")
-    precision = _compute_precision_or_recall(manifold_real, fake_feats)
-    recall = _compute_precision_or_recall(manifold_fake, real_feats)
-
-    del vgg16
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    return precision, recall
-
-
-# =========================================================
-# 6. 每个 split 的整体 + per-class 评估
-# =========================================================
-@torch.no_grad()
-def evaluate_split_with_overall_and_per_class_metrics(
-    split_name,
-    real_loader,
-    accelerator,
-    model,
-    noise_scheduler,
-    class_names,
-    dataset_count_dict,
-    num_total_samples,
-    fid_dir,
-    fid_generated_dir,
-    epoch,
-    resolution,
-    eval_batch_size,
-    num_inference_steps,
-    use_ddim_sampling,
-    ddim_eta,
-    use_class_conditioning,
-    ipr_k,
-    kid_subsets=50,
-    kid_subset_size=50,
-    compute_per_class_metrics=False,
-    per_class_max_real_samples=None,
-):
-    """
-    1. 先按真实类别比例为每个类别分配要评估的样本数
-    2. 收集各类别真实图像
-    3. 按类别生成假图
-    4. 先算 overall FID / precision / recall
-    5. 再算 per-class FID / precision / recall
-    """
-    device = accelerator.device
-
-    if num_total_samples <= 0:
-        return {
-            "overall_fid": None,
-            "overall_kid_mean": None,
-            "overall_kid_std": None,
-            "overall_precision": None,
-            "overall_recall": None,
-            "overall_json_path": "",
-            "per_class_json_path": "",
-            "generated_dir": "",
-            "per_class_generated_dir": "",
-            "per_class_metrics": {},
-            "allocated_counts_by_class": {name: 0 for name in class_names},
-            "per_class_counts_by_class": {},
-        }
-
-    allocated_counts_by_class = allocate_samples_by_ratio(
-        dataset_count_dict, num_total_samples
-    )
-
-    print(f"\n[{split_name.upper()}] allocated evaluation samples by class:")
-    print_class_distribution(
-        f"{split_name.upper()} Eval Allocation", allocated_counts_by_class
-    )
-
-    real_by_class = collect_real_images_by_class(
-        real_loader=real_loader,
-        device=device,
-        class_names=class_names,
-        target_counts_by_class=allocated_counts_by_class,
-    )
-
-    fake_by_class, generated_dir = generate_images_by_class_for_metrics(
-        accelerator=accelerator,
-        model=model,
-        noise_scheduler=noise_scheduler,
-        class_names=class_names,
-        target_counts_by_class=allocated_counts_by_class,
-        fake_save_root=fid_generated_dir,
-        save_dir_name=f"epoch_{epoch:03d}_{split_name}_generated",
-        resolution=resolution,
-        eval_batch_size=eval_batch_size,
-        num_inference_steps=num_inference_steps,
-        use_ddim_sampling=use_ddim_sampling,
-        ddim_eta=ddim_eta,
-        use_class_conditioning=use_class_conditioning,
-    )
-
-    real_overall = concat_class_tensors(
-        real_by_class, class_names, allocated_counts_by_class, device
-    )
-    fake_overall = concat_class_tensors(
-        fake_by_class, class_names, allocated_counts_by_class, device
-    )
-
-    overall_fid = compute_fid_from_real_and_fake(real_overall, fake_overall, device)
-    overall_kid_mean, overall_kid_std = compute_kid_from_real_and_fake(
-        real_images_uint8=real_overall,
-        fake_images_uint8=fake_overall,
-        device=device,
-        subsets=kid_subsets,
-        subset_size=kid_subset_size,
-    )
-    overall_precision, overall_recall = compute_manifold_precision_recall(
-        real_images_uint8=real_overall,
-        fake_images_uint8=fake_overall,
-        device=device,
-        k=ipr_k,
-    )
-
-    overall_json_path = os.path.join(
-        fid_dir, f"epoch_{epoch:03d}_{split_name}_fid.json"
-    )
-    save_json(
-        {
-            "epoch": epoch,
-            "split": split_name,
-            "num_real_images": int(real_overall.size(0)),
-            "num_fake_images": int(fake_overall.size(0)),
-            "num_images_by_class": format_count_ratio_dict(allocated_counts_by_class),
-            "num_images_by_class_raw": allocated_counts_by_class,
-            "fid": float(overall_fid) if overall_fid is not None else None,
-            "kid_mean": (
-                float(overall_kid_mean) if overall_kid_mean is not None else None
-            ),
-            "kid_std": float(overall_kid_std) if overall_kid_std is not None else None,
-            "precision": (
-                float(overall_precision) if overall_precision is not None else None
-            ),
-            "recall": float(overall_recall) if overall_recall is not None else None,
-            "ipr_k": ipr_k,
-            "kid_subsets": int(kid_subsets),
-            "kid_subset_size": int(kid_subset_size),
-            "generated_dir": generated_dir,
-            "sampler": "ddim" if use_ddim_sampling else "ddpm",
-            "num_inference_steps": int(num_inference_steps),
-            "ddim_eta": float(ddim_eta) if use_ddim_sampling else None,
-            "use_class_conditioning": bool(use_class_conditioning),
-            "overall_generated_follow_real_distribution": True,
-        },
-        overall_json_path,
-    )
-
-    print(
-        f"[{split_name.upper()}] Overall FID: " f"{overall_fid:.6f}"
-        if overall_fid is not None
-        else f"[{split_name.upper()}] Overall FID: None"
-    )
-    if overall_kid_mean is not None and overall_kid_std is not None:
-        print(
-            f"[{split_name.upper()}] Overall KID: mean={overall_kid_mean:.6f}, std={overall_kid_std:.6f}"
-        )
-    else:
-        print(f"[{split_name.upper()}] Overall KID: None")
-    print(
-        f"[{split_name.upper()}] Overall Precision: " f"{overall_precision:.4f}"
-        if overall_precision is not None
-        else f"[{split_name.upper()}] Overall Precision: None"
-    )
-    print(
-        f"[{split_name.upper()}] Overall Recall: " f"{overall_recall:.4f}"
-        if overall_recall is not None
-        else f"[{split_name.upper()}] Overall Recall: None"
-    )
+    num_classes = len(class_names)
+    labels = np.arange(num_classes)
+
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    y_true_bin = label_binarize(y_true, classes=labels)
 
     per_class_metrics = {}
-    per_class_json_path = ""
-    per_class_generated_dir = ""
-    per_class_counts_by_class = {}
+    per_class_auc_list = []
+    per_class_sensitivity_list = []
+    per_class_specificity_list = []
+    per_class_accuracy_list = []
+    per_class_ap_list = []
+    per_class_f1_list = []
+    per_class_ppv_list = []
+    per_class_npv_list = []
 
-    # -------------------------------------------------
-    # 只有训练集才计算 per-class 指标
-    # 并且每个类别单独使用：
-    # min(该类真实样本数, per_class_max_real_samples)
-    # -------------------------------------------------
-    if compute_per_class_metrics and split_name == "train":
-        print(f"\n[{split_name.upper()}] Per-class evaluation ENABLED")
-        if per_class_max_real_samples is None:
-            raise ValueError(
-                "When compute_per_class_metrics=True, per_class_max_real_samples must be provided."
-            )
+    total_samples = cm.sum()
 
-        per_class_counts_by_class = {
-            class_name: min(
-                int(dataset_count_dict[class_name]), int(per_class_max_real_samples)
-            )
-            for class_name in class_names
+    for i, class_name in enumerate(class_names):
+        tp = cm[i, i]
+        fn = cm[i, :].sum() - tp
+        fp = cm[:, i].sum() - tp
+        tn = total_samples - tp - fn - fp
+
+        sensitivity = safe_div(tp, tp + fn)  # recall
+        specificity = safe_div(tn, tn + fp)
+        accuracy_i = safe_div(tp + tn, total_samples)
+        ppv = safe_div(tp, tp + fp)  # precision
+        npv = safe_div(tn, tn + fn)
+
+        if np.isnan(ppv) or np.isnan(sensitivity) or (ppv + sensitivity) == 0:
+            f1_i = float("nan")
+        else:
+            f1_i = 2 * ppv * sensitivity / (ppv + sensitivity)
+
+        y_true_i = y_true_bin[:, i]
+        y_prob_i = y_prob[:, i]
+
+        if len(np.unique(y_true_i)) < 2:
+            auc_i = float("nan")
+            ap_i = float("nan")
+        else:
+            auc_i = float(roc_auc_score(y_true_i, y_prob_i))
+            ap_i = float(average_precision_score(y_true_i, y_prob_i))
+
+        melanoma_auc80 = float("nan")
+        if class_name == "MEL":
+            melanoma_auc80 = compute_auc80(y_true_i, y_prob_i, sensitivity_low=0.8)
+
+        per_class_metrics[class_name] = {
+            "sensitivity": (
+                float(sensitivity) if not np.isnan(sensitivity) else float("nan")
+            ),
+            "specificity": (
+                float(specificity) if not np.isnan(specificity) else float("nan")
+            ),
+            "accuracy": float(accuracy_i) if not np.isnan(accuracy_i) else float("nan"),
+            "auc": float(auc_i) if not np.isnan(auc_i) else float("nan"),
+            "mean_average_precision": (
+                float(ap_i) if not np.isnan(ap_i) else float("nan")
+            ),
+            "f1_score": float(f1_i) if not np.isnan(f1_i) else float("nan"),
+            "ppv": float(ppv) if not np.isnan(ppv) else float("nan"),
+            "npv": float(npv) if not np.isnan(npv) else float("nan"),
+            "auc80": (
+                float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan")
+            ),
         }
 
-        print(f"\n[{split_name.upper()}] Per-class metrics sample counts")
-        print_class_distribution(
-            f"{split_name.upper()} Per-class Eval Counts", per_class_counts_by_class
+        per_class_auc_list.append(auc_i)
+        per_class_sensitivity_list.append(sensitivity)
+        per_class_specificity_list.append(specificity)
+        per_class_accuracy_list.append(accuracy_i)
+        per_class_ap_list.append(ap_i)
+        per_class_f1_list.append(f1_i)
+        per_class_ppv_list.append(ppv)
+        per_class_npv_list.append(npv)
+
+    # -----------------------------
+    # 聚合指标
+    # -----------------------------
+    overall_accuracy = accuracy_score(y_true, y_pred) * 100.0
+
+    # 这个就是你要的 normalized multi-class accuracy metric
+    balanced_macro_recall = balanced_accuracy_score(y_true, y_pred)
+
+    macro_f1 = f1_score(y_true, y_pred, average="macro")
+    macro_precision = precision_score(y_true, y_pred, average="macro", zero_division=0)
+    macro_recall = balanced_macro_recall
+
+    # 宏平均 AUC / AP / Sens / Spec / Acc / PPV / NPV
+    mean_auc_all_diagnoses = float(np.nanmean(per_class_auc_list))
+    mean_ap_all_diagnoses = float(np.nanmean(per_class_ap_list))
+    mean_sensitivity = float(np.nanmean(per_class_sensitivity_list))
+    mean_specificity = float(np.nanmean(per_class_specificity_list))
+    mean_accuracy = float(np.nanmean(per_class_accuracy_list))
+    mean_f1 = float(np.nanmean(per_class_f1_list))
+    mean_ppv = float(np.nanmean(per_class_ppv_list))
+    mean_npv = float(np.nanmean(per_class_npv_list))
+
+    # 你之前已经在算的多分类 OVR macro AUC
+    try:
+        multiclass_macro_auc_ovr = float(
+            roc_auc_score(y_true_bin, y_prob, average="macro", multi_class="ovr")
         )
+    except ValueError:
+        multiclass_macro_auc_ovr = float("nan")
 
-        # 单独收集 per-class real
-        per_class_real_by_class = collect_real_images_by_class(
-            real_loader=real_loader,
-            device=device,
-            class_names=class_names,
-            target_counts_by_class=per_class_counts_by_class,
-        )
+    # 恶性 vs 良性 AUC
+    # 这里按常见临床分组推断：
+    # malignant = MEL / BCC / AKIEC
+    # benign    = NV / BKL / DF / VASC
+    malignant_names = [name for name in ["MEL", "BCC", "AKIEC"] if name in class_names]
+    malignant_indices = [class_names.index(name) for name in malignant_names]
 
-        # -------------------------------------------------
-        # 复用 overall 阶段已经生成好的 fake_by_class
-        # 如果某个类别数量不够，再只补生成缺少的部分
-        # -------------------------------------------------
-        extra_counts_by_class = {}
-        for class_name in class_names:
-            already_have = int(fake_by_class[class_name].size(0))
-            target_need = int(per_class_counts_by_class[class_name])
-            extra_counts_by_class[class_name] = max(0, target_need - already_have)
+    if len(malignant_indices) > 0:
+        y_true_malignant = np.isin(y_true, malignant_indices).astype(int)
+        y_prob_malignant = y_prob[:, malignant_indices].sum(axis=1)
 
-        total_extra_needed = sum(extra_counts_by_class.values())
-
-        # 默认先认为 per-class 复用 overall 的生成结果目录
-        per_class_generated_dir = generated_dir
-
-        # 只有确实不够时，才额外补生成
-        if total_extra_needed > 0:
-            print(
-                f"\n[{split_name.upper()}] Reusing overall fake images and topping up for per-class..."
-            )
-            print_class_distribution(
-                f"{split_name.upper()} Per-class Extra Fake Allocation",
-                extra_counts_by_class,
-            )
-
-            extra_fake_by_class, per_class_generated_dir = (
-                generate_images_by_class_for_metrics(
-                    accelerator=accelerator,
-                    model=model,
-                    noise_scheduler=noise_scheduler,
-                    class_names=class_names,
-                    target_counts_by_class=extra_counts_by_class,
-                    fake_save_root=fid_generated_dir,
-                    save_dir_name=f"epoch_{epoch:03d}_{split_name}_per_class_generated_topup",
-                    resolution=resolution,
-                    eval_batch_size=eval_batch_size,
-                    num_inference_steps=num_inference_steps,
-                    use_ddim_sampling=use_ddim_sampling,
-                    ddim_eta=ddim_eta,
-                    use_class_conditioning=use_class_conditioning,
-                )
-            )
+        if len(np.unique(y_true_malignant)) < 2:
+            malignant_vs_benign_auc = float("nan")
         else:
-            # 不需要补生成时，给每个类别一个空 tensor，后面统一拼接
-            extra_fake_by_class = {
-                class_name: fake_by_class[class_name][:0] for class_name in class_names
-            }
-
-        # 把 overall 已有的 fake 和 top-up 的 fake 拼起来
-        per_class_fake_by_class = {}
-        for class_name in class_names:
-            reused_fake = fake_by_class[class_name]
-            extra_fake = extra_fake_by_class[class_name]
-
-            per_class_fake_by_class[class_name] = torch.cat(
-                [reused_fake, extra_fake], dim=0
-            )[: per_class_counts_by_class[class_name]]
-
-        total_per_class = sum(per_class_counts_by_class.values())
-
-        print(f"\n[{split_name.upper()}] Per-class metrics")
-        print("-" * 80)
-        for class_name in class_names:
-            real_c = per_class_real_by_class[class_name]
-            fake_c = per_class_fake_by_class[class_name]
-            class_count = int(per_class_counts_by_class.get(class_name, 0))
-            ratio_c = (
-                (class_count / total_per_class * 100.0) if total_per_class > 0 else 0.0
+            malignant_vs_benign_auc = float(
+                roc_auc_score(y_true_malignant, y_prob_malignant)
             )
+    else:
+        malignant_vs_benign_auc = float("nan")
 
-            if class_count <= 0 or real_c.size(0) == 0 or fake_c.size(0) == 0:
-                per_class_metrics[class_name] = {
-                    "num_real_images": f"{class_count} ({ratio_c:.2f}%)",
-                    "num_real_images_raw": class_count,
-                    "num_fake_images": f"{class_count} ({ratio_c:.2f}%)",
-                    "num_fake_images_raw": class_count,
-                    "fid": None,
-                    "kid_mean": None,
-                    "kid_std": None,
-                    "precision": None,
-                    "recall": None,
-                }
-                print(f"{class_name}: skipped (0 samples)")
-                continue
-
-            fid_c = compute_fid_from_real_and_fake(real_c, fake_c, device)
-            kid_mean_c, kid_std_c = compute_kid_from_real_and_fake(
-                real_images_uint8=real_c,
-                fake_images_uint8=fake_c,
-                device=device,
-                subsets=kid_subsets,
-                subset_size=min(kid_subset_size, class_count),
-            )
-
-            # ⭐ 限制 IPR 使用的样本数（防止内存爆炸）
-            ipr_limit = 300
-
-            real_ipr = real_c[:ipr_limit]
-            fake_ipr = fake_c[:ipr_limit]
-
-            precision_c, recall_c = compute_manifold_precision_recall(
-                real_images_uint8=real_ipr,
-                fake_images_uint8=fake_ipr,
-                device=device,
-                k=ipr_k,
-            )
-
-            per_class_metrics[class_name] = {
-                "num_real_images": f"{class_count} ({ratio_c:.2f}%)",
-                "num_real_images_raw": class_count,
-                "num_fake_images": f"{class_count} ({ratio_c:.2f}%)",
-                "num_fake_images_raw": class_count,
-                "fid": float(fid_c) if fid_c is not None else None,
-                "kid_mean": float(kid_mean_c) if kid_mean_c is not None else None,
-                "kid_std": float(kid_std_c) if kid_std_c is not None else None,
-                "precision": float(precision_c) if precision_c is not None else None,
-                "recall": float(recall_c) if recall_c is not None else None,
-            }
-
-            fid_str = f"{fid_c:.6f}" if fid_c is not None else "None"
-            kid_mean_str = f"{kid_mean_c:.6f}" if kid_mean_c is not None else "None"
-            kid_std_str = f"{kid_std_c:.6f}" if kid_std_c is not None else "None"
-            precision_str = f"{precision_c:.4f}" if precision_c is not None else "None"
-            recall_str = f"{recall_c:.4f}" if recall_c is not None else "None"
-
-            print(
-                f"{class_name}: count={class_count} ({ratio_c:.2f}%), "
-                f"FID={fid_str}, KID(mean/std)=({kid_mean_str}/{kid_std_str}), "
-                f"Precision={precision_str}, Recall={recall_str}"
-            )
-
-        per_class_json_path = os.path.join(
-            fid_dir, f"epoch_{epoch:03d}_{split_name}_per_class_metrics.json"
-        )
-        save_json(
-            {
-                "epoch": epoch,
-                "split": split_name,
-                "num_images_by_class": format_count_ratio_dict(
-                    per_class_counts_by_class
-                ),
-                "num_images_by_class_raw": per_class_counts_by_class,
-                "metrics_by_class": per_class_metrics,
-                "generated_dir": per_class_generated_dir,
-                "sampler": "ddim" if use_ddim_sampling else "ddpm",
-                "num_inference_steps": int(num_inference_steps),
-                "ddim_eta": float(ddim_eta) if use_ddim_sampling else None,
-                "use_class_conditioning": bool(use_class_conditioning),
-                "ipr_k": ipr_k,
-                "kid_subsets": int(kid_subsets),
-                "kid_subset_size": int(kid_subset_size),
-                "per_class_real_sample_rule": f"min(real_class_count, {int(per_class_max_real_samples)})",
-            },
-            per_class_json_path,
-        )
-
-    return {
-        "overall_fid": overall_fid,
-        "overall_kid_mean": overall_kid_mean,
-        "overall_kid_std": overall_kid_std,
-        "overall_precision": overall_precision,
-        "overall_recall": overall_recall,
-        "overall_json_path": overall_json_path,
-        "per_class_json_path": per_class_json_path,
-        "generated_dir": generated_dir,
-        "per_class_generated_dir": per_class_generated_dir,
-        "per_class_metrics": per_class_metrics,
-        "allocated_counts_by_class": allocated_counts_by_class,
-        "per_class_counts_by_class": per_class_counts_by_class,
-    }
-
-
-@torch.no_grad()
-def run_validation_only(
-    args,
-    accelerator,
-    model,
-    noise_scheduler,
-    train_eval_loader,
-    val_eval_loader,
-    class_names,
-    train_class_distribution,
-    val_class_distribution,
-    exp_folders,
-    checkpoint_epoch,
-):
-    """
-    only-val 模式：
-    1. 加载 checkpoint 后
-    2. 同时评估 train / val
-    3. 全部结果写到 exp_dir/run_vals/<run_name>/
-    """
-    model.eval()
-
-    run_name = make_runtime_run_name(args)
-    run_folders = setup_runtime_run_folders(
-        exp_dir=exp_folders["exp_dir"],
-        run_mode="val_only",
-        run_name=run_name,
+    melanoma_auc80 = (
+        per_class_metrics["MEL"]["auc80"]
+        if "MEL" in per_class_metrics
+        else float("nan")
     )
 
-    save_json(
-        {
-            "run_mode": args.run_mode,
-            "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "checkpoint_path": args.resume_from_checkpoint,
-            "experiment_dir": exp_folders["exp_dir"],
-            "checkpoint_epoch": checkpoint_epoch,
-            "args": vars(args),
-        },
-        run_folders["run_config_json"],
-    )
-
-    print(f"\n[VAL_ONLY] Run directory: {run_folders['run_dir']}")
-
-    # -------------------------
-    # 1) train split 评估
-    # -------------------------
-    enable_train_fid = args.num_fid_samples_train > 0
-    enable_val_fid = args.num_fid_samples_val > 0
-
-    train_eval_result = None
-    val_eval_result = None
-
-    if enable_train_fid:
-        print("\n[VAL_ONLY] Evaluating TRAIN split ...")
-        train_eval_result = evaluate_split_with_overall_and_per_class_metrics(
-            split_name="train",
-            real_loader=train_eval_loader,
-            accelerator=accelerator,
-            model=model,
-            noise_scheduler=noise_scheduler,
-            class_names=class_names,
-            dataset_count_dict=train_class_distribution,
-            num_total_samples=args.num_fid_samples_train,
-            fid_dir=run_folders["metrics_dir"],
-            fid_generated_dir=run_folders["generated_dir"],
-            epoch=checkpoint_epoch,
-            resolution=args.resolution,
-            eval_batch_size=args.eval_batch_size,
-            num_inference_steps=args.ddpm_num_inference_steps,
-            use_ddim_sampling=args.use_ddim_sampling,
-            ddim_eta=args.ddim_eta,
-            use_class_conditioning=args.use_class_conditioning,
-            ipr_k=args.ipr_k,
-            kid_subsets=50,
-            kid_subset_size=50,
-            compute_per_class_metrics=args.enable_per_class_metrics,
-            per_class_max_real_samples=(
-                args.num_fid_samples_train if args.enable_per_class_metrics else None
+    metrics = {
+        "overall": {
+            "accuracy": float(overall_accuracy),  # 保持和你原代码一致：百分比
+            "balanced_multiclass_accuracy": float(
+                balanced_macro_recall
+            ),  # macro recall
+            "macro_recall": float(macro_recall),
+            "macro_precision": float(macro_precision),
+            "macro_f1": float(macro_f1),
+            "multiclass_macro_auc_ovr": float(multiclass_macro_auc_ovr),
+            "mean_auc_all_diagnoses": float(mean_auc_all_diagnoses),
+            "mean_average_precision_all_diagnoses": float(mean_ap_all_diagnoses),
+            "mean_sensitivity": float(mean_sensitivity),
+            "mean_specificity": float(mean_specificity),
+            "mean_accuracy": float(mean_accuracy),
+            "mean_f1": float(mean_f1),
+            "mean_ppv": float(mean_ppv),
+            "mean_npv": float(mean_npv),
+            "melanoma_auc80": (
+                float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan")
             ),
-        )
-    else:
-        print("[VAL_ONLY] Train evaluation skipped (--num_fid_samples_train 0).")
-
-    # -------------------------
-    # 2) val split 评估
-    # -------------------------
-    if enable_val_fid:
-        print("\n[VAL_ONLY] Evaluating VAL split ...")
-        val_eval_result = evaluate_split_with_overall_and_per_class_metrics(
-            split_name="val",
-            real_loader=val_eval_loader,
-            accelerator=accelerator,
-            model=model,
-            noise_scheduler=noise_scheduler,
-            class_names=class_names,
-            dataset_count_dict=val_class_distribution,
-            num_total_samples=args.num_fid_samples_val,
-            fid_dir=run_folders["metrics_dir"],
-            fid_generated_dir=run_folders["generated_dir"],
-            epoch=checkpoint_epoch,
-            resolution=args.resolution,
-            eval_batch_size=args.eval_batch_size,
-            num_inference_steps=args.ddpm_num_inference_steps,
-            use_ddim_sampling=args.use_ddim_sampling,
-            ddim_eta=args.ddim_eta,
-            use_class_conditioning=args.use_class_conditioning,
-            ipr_k=args.ipr_k,
-            kid_subsets=50,
-            kid_subset_size=50,
-            compute_per_class_metrics=False,
-            per_class_max_real_samples=None,
-        )
-    else:
-        print("[VAL_ONLY] Val evaluation skipped (--num_fid_samples_val 0).")
-
-    run_summary = {
-        "run_mode": "val_only",
-        "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "checkpoint_path": args.resume_from_checkpoint,
-        "experiment_dir": exp_folders["exp_dir"],
-        "checkpoint_epoch": checkpoint_epoch,
-        "sampler": "ddim" if args.use_ddim_sampling else "ddpm",
-        "num_inference_steps": int(args.ddpm_num_inference_steps),
-        "ddim_eta": float(args.ddim_eta) if args.use_ddim_sampling else None,
-        "use_class_conditioning": bool(args.use_class_conditioning),
-        "train_result": train_eval_result,
-        "val_result": val_eval_result,
-    }
-    save_json(run_summary, run_folders["run_summary_json"])
-
-    print(f"[VAL_ONLY] Summary saved to: {run_folders['run_summary_json']}")
-
-
-@torch.no_grad()
-def run_inference_only(
-    args,
-    accelerator,
-    model,
-    noise_scheduler,
-    class_names,
-    exp_folders,
-    checkpoint_epoch,
-):
-    """
-    only-infer 模式：
-    1. 加载 checkpoint
-    2. 指定类别 / 数量生成图片
-    3. 输出到 exp_dir/run_infers/<run_name>/
-    """
-    model.eval()
-
-    if args.infer_num_images <= 0:
-        raise ValueError("When run_mode='infer_only', --infer_num_images must be > 0.")
-
-    infer_label_idx, infer_label_name = normalize_label_to_index_and_name(
-        args.infer_label, class_names
-    )
-
-    # 无条件模型不允许指定类别
-    if (not args.use_class_conditioning) and (args.infer_label is not None):
-        raise ValueError(
-            "Current run is unconditional (use_class_conditioning=False), "
-            "so --infer_label should not be specified."
-        )
-
-    # 条件模型建议必须显式指定类别
-    if args.use_class_conditioning and args.infer_label is None:
-        raise ValueError(
-            "When use_class_conditioning=True and run_mode='infer_only', "
-            "--infer_label must be specified."
-        )
-
-    run_name = make_runtime_run_name(args)
-    run_folders = setup_runtime_run_folders(
-        exp_dir=exp_folders["exp_dir"],
-        run_mode="infer_only",
-        run_name=run_name,
-    )
-
-    if infer_label_name is not None:
-        infer_image_dir = os.path.join(
-            run_folders["generated_dir"], f"generated_{infer_label_name}"
-        )
-    else:
-        infer_image_dir = os.path.join(
-            run_folders["generated_dir"], "generated_unconditional"
-        )
-    os.makedirs(infer_image_dir, exist_ok=True)
-
-    save_json(
-        {
-            "run_mode": args.run_mode,
-            "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "checkpoint_path": args.resume_from_checkpoint,
-            "experiment_dir": exp_folders["exp_dir"],
-            "checkpoint_epoch": checkpoint_epoch,
-            "infer_label": args.infer_label,
-            "infer_label_name": infer_label_name,
-            "infer_label_idx": infer_label_idx,
-            "infer_num_images": args.infer_num_images,
-            "args": vars(args),
+            "malignant_vs_benign_auc": (
+                float(malignant_vs_benign_auc)
+                if not np.isnan(malignant_vs_benign_auc)
+                else float("nan")
+            ),
         },
-        run_folders["run_config_json"],
-    )
-
-    print(f"\n[INFER_ONLY] Run directory: {run_folders['run_dir']}")
-    print(f"[INFER_ONLY] Image output directory: {infer_image_dir}")
-
-    sampling_scheduler = build_sampling_scheduler(
-        noise_scheduler=noise_scheduler,
-        use_ddim_sampling=args.use_ddim_sampling,
-    )
-
-    saved_image_paths = []
-    generated_count = 0
-    batch_id = 0
-
-    while generated_count < args.infer_num_images:
-        cur_bs = min(args.eval_batch_size, args.infer_num_images - generated_count)
-
-        generator = torch.Generator(device=accelerator.device).manual_seed(
-            args.seed + batch_id
-        )
-
-        if args.use_class_conditioning:
-            class_labels = torch.full(
-                (cur_bs,),
-                fill_value=infer_label_idx,
-                device=accelerator.device,
-                dtype=torch.long,
-            )
-        else:
-            class_labels = None
-
-        samples_uint8 = sample_images_with_model(
-            model=model,
-            sampling_scheduler=sampling_scheduler,
-            device=accelerator.device,
-            resolution=args.resolution,
-            batch_size=cur_bs,
-            num_inference_steps=args.ddpm_num_inference_steps,
-            generator=generator,
-            use_class_conditioning=args.use_class_conditioning,
-            class_labels=class_labels,
-            ddim_eta=args.ddim_eta,
-        )
-
-        for i in range(samples_uint8.size(0)):
-            pil_img = uint8_tensor_to_pil(samples_uint8[i])
-
-            if infer_label_name is not None:
-                file_name = f"sample_{generated_count:05d}_{infer_label_name}.png"
-            else:
-                file_name = f"sample_{generated_count:05d}.png"
-
-            img_path = os.path.join(infer_image_dir, file_name)
-            pil_img.save(img_path)
-            saved_image_paths.append(img_path)
-            generated_count += 1
-
-        batch_id += 1
-
-    run_summary = {
-        "run_mode": "infer_only",
-        "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "checkpoint_path": args.resume_from_checkpoint,
-        "experiment_dir": exp_folders["exp_dir"],
-        "checkpoint_epoch": checkpoint_epoch,
-        "sampler": "ddim" if args.use_ddim_sampling else "ddpm",
-        "num_inference_steps": int(args.ddpm_num_inference_steps),
-        "ddim_eta": float(args.ddim_eta) if args.use_ddim_sampling else None,
-        "use_class_conditioning": bool(args.use_class_conditioning),
-        "infer_label": args.infer_label,
-        "infer_label_name": infer_label_name,
-        "infer_label_idx": infer_label_idx,
-        "infer_num_images": int(args.infer_num_images),
-        "image_output_dir": infer_image_dir,
-        "num_saved_images": len(saved_image_paths),
+        "per_class": per_class_metrics,
+        "malignant_definition_used": malignant_names,
     }
-    save_json(run_summary, run_folders["run_summary_json"])
 
-    print(f"[INFER_ONLY] Summary saved to: {run_folders['run_summary_json']}")
+    return metrics
 
 
 # =========================================================
-# 7. 主函数
+# 5. 主函数（只给出你需要替换/新增的位置）
 # =========================================================
-def main(args):
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+def main():
+    args = parse_args()
+    global best_acc1
+
+    # -----------------------------
+    # 固定随机种子
+    # -----------------------------
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(args.seed)
+            torch.cuda.manual_seed_all(args.seed)
+
+        warnings.warn(
+            "You have chosen to seed training. "
+            "This may slow down training a bit, but improves reproducibility."
+        )
+
+    # -----------------------------
+    # 选择设备
+    # -----------------------------
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+        if args.gpu is not None:
+            device = torch.device(f"cuda:{args.gpu}")
+        else:
+            device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
 
-    if (
-        args.run_mode in ["val_only", "infer_only"]
-        and args.resume_from_checkpoint is None
-    ):
-        raise ValueError(
-            f"When run_mode='{args.run_mode}', --resume_from_checkpoint must be provided."
-        )
+    print(f"Using device: {device}")
 
-    if args.resume_from_checkpoint is not None:
-        print(f"Loading checkpoint from: {args.resume_from_checkpoint}")
-        checkpoint = torch.load(args.resume_from_checkpoint, map_location="cpu")
-        recovered_exp_dir = recover_exp_dir_from_checkpoint(
-            args.resume_from_checkpoint, checkpoint
-        )
-        exp_name = os.path.basename(recovered_exp_dir)
-        exp_folders = setup_experiment_folders(
-            base_dir=os.path.dirname(recovered_exp_dir), exp_name=exp_name
-        )
-        print(f"Resuming experiment at: {recovered_exp_dir}")
+    # -----------------------------
+    # ISIC2018 Task3 路径
+    # -----------------------------
+    train_gt_csv_path = args.train_gt_csv_path
+    val_gt_csv_path = args.val_gt_csv_path
+    train_img_dir = args.train_img_dir
+    val_img_dir = args.val_img_dir
+
+    # -----------------------------
+    # 创建或复用实验目录
+    # -----------------------------
+    if args.resume is not None:
+        checkpoint = torch.load(args.resume, map_location="cpu")
+
+        if "exp_dir" in checkpoint:
+            exp_dir = checkpoint["exp_dir"]
+        else:
+            exp_dir = os.path.dirname(os.path.dirname(args.resume))
+            print(
+                f"=> warning: checkpoint 中没有 'exp_dir'，使用路径反推实验目录: {exp_dir}"
+            )
+
+        exp_folders = reuse_experiment_folders(exp_dir)
+        exp_name = os.path.basename(exp_dir)
+        print(f"=> reusing experiment folder: {exp_folders['exp_dir']}")
     else:
         checkpoint = None
         exp_name = make_experiment_name(args)
-        exp_folders = setup_experiment_folders(args.output_root, exp_name)
+        exp_folders = setup_experiment_folders(
+            base_dir="experiments", exp_name=exp_name
+        )
 
     metrics_csv_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.csv")
     metrics_json_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.json")
     metadata_json_path = os.path.join(
         exp_folders["metadata_dir"], "experiment_metadata.json"
     )
-    best_model_path = os.path.join(exp_folders["checkpoints_dir"], "model_best.pth.tar")
-
-    # Accelerator 初始化
-    accelerator = Accelerator(
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        mixed_precision=args.mixed_precision,
+    best_model_path = os.path.join(
+        exp_folders["checkpoints_dir"], "classifier_best.pth.tar"
     )
 
-    # 数据准备
-    image_transforms = transforms.Compose(
+    start_epoch = 0
+    best_epoch = -1
+    best_acc1 = 0.0
+
+    # =====================================================
+    # 数据加载部分
+    # =====================================================
+    train_transforms = transforms.Compose(
         [
-            transforms.Resize(
-                (args.resolution, args.resolution),
-                interpolation=transforms.InterpolationMode.BILINEAR,
-            ),
+            transforms.Resize((args.resolution, args.resolution)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.RandomRotation(degrees=15),
             transforms.ToTensor(),
             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
         ]
     )
 
-    train_dataset = ISIC2018DDPMDataset(
-        gt_csv_path=args.train_gt_csv_path,
-        img_dir=args.train_img_dir,
-        transform=image_transforms,
-        data_mode=args.data_mode,
-        target_label=args.target_label,
+    val_transforms = transforms.Compose(
+        [
+            transforms.Resize((args.resolution, args.resolution)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+        ]
     )
-    val_dataset = ISIC2018DDPMDataset(
-        gt_csv_path=args.val_gt_csv_path,
-        img_dir=args.val_img_dir,
-        transform=image_transforms,
-        data_mode=args.data_mode,
-        target_label=args.target_label,
+
+    train_dataset = ISICResNetDataset(
+        gt_csv_path=train_gt_csv_path,
+        img_dir=train_img_dir,
+        transform=train_transforms,
     )
+
+    val_dataset = ISICResNetDataset(
+        gt_csv_path=val_gt_csv_path,
+        img_dir=val_img_dir,
+        transform=val_transforms,
+    )
+
+    print(f"Train dataset size: {len(train_dataset)}")
+    print(f"Val dataset size  : {len(val_dataset)}")
 
     gt_df = pd.read_csv(args.train_gt_csv_path)
     class_names = [c for c in gt_df.columns if c != "image"]
     num_classes = len(class_names)
 
-    print(f"Train dataset size: {len(train_dataset)}")
-    print(f"Validation dataset size: {len(val_dataset)}")
-
-    train_indices = np.arange(len(train_dataset))
-    val_indices = np.arange(len(val_dataset))
-    train_class_distribution = count_labels_from_indices(
-        train_dataset.labels, train_indices, class_names
+    train_class_distribution = count_labels_from_dataset(
+        labels=train_dataset.labels, class_names=class_names
     )
-    val_class_distribution = count_labels_from_indices(
-        val_dataset.labels, val_indices, class_names
+    val_class_distribution = count_labels_from_dataset(
+        labels=val_dataset.labels, class_names=class_names
     )
 
     print_class_distribution(
@@ -1906,38 +996,41 @@ def main(args):
         "Validation Dataset Class Distribution", val_class_distribution
     )
 
-    pin_memory = torch.cuda.is_available()
+    pin_memory = device.type == "cuda"
 
-    train_dataloader = DataLoader(
+    train_loader = DataLoader(
         train_dataset,
-        batch_size=args.train_batch_size,
+        batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.dataloader_num_workers,
+        num_workers=args.workers,
         pin_memory=pin_memory,
-        drop_last=True,
     )
-    train_eval_loader = DataLoader(
-        train_dataset,
-        batch_size=args.eval_batch_size,
-        shuffle=True,
-        num_workers=args.dataloader_num_workers,
-        pin_memory=pin_memory,
-        drop_last=False,
-    )
-    val_eval_loader = DataLoader(
+
+    val_loader = DataLoader(
         val_dataset,
-        batch_size=args.eval_batch_size,
+        batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.dataloader_num_workers,
+        num_workers=args.workers,
         pin_memory=pin_memory,
-        drop_last=False,
     )
 
-    # -------------------------
-    # 模型：
-    # 1. 如果开启类别条件，就给 UNet2DModel 加 num_class_embeds
-    # 2. forward 时再传 class_labels
-    # -------------------------
+    # =====================================================
+    # 1) 加载外部已训练好的 diffusion model
+    # =====================================================
+    if args.diffusion_checkpoint is None:
+        raise ValueError(
+            "必须提供 --diffusion_checkpoint，当前场景下扩散模型来自外部已训练权重。"
+        )
+
+    print(f"=> loading external diffusion checkpoint from: {args.diffusion_checkpoint}")
+    diffusion_checkpoint = torch.load(args.diffusion_checkpoint, map_location="cpu")
+    if "model_state_dict" not in diffusion_checkpoint:
+        raise ValueError(
+            "diffusion checkpoint 中缺少 'model_state_dict'，当前代码无法加载。"
+        )
+
+    from diffusers import UNet2DModel, DDIMScheduler, DDPMScheduler
+
     model = UNet2DModel(
         sample_size=args.resolution,
         in_channels=3,
@@ -1961,617 +1054,951 @@ def main(args):
             "UpBlock2D",
         ),
         num_class_embeds=num_classes if args.use_class_conditioning else None,
-        resnet_time_scale_shift="default",
+        resnet_time_scale_shift=args.time_scale_shift,
+    )
+    missing_keys, unexpected_keys = model.load_state_dict(
+        diffusion_checkpoint["model_state_dict"],
+        strict=False,
     )
 
-    # 噪声调度器（DDPM Scheduler）
-    noise_scheduler = DDPMScheduler(
+    if len(missing_keys) > 0 or len(unexpected_keys) > 0:
+        print("WARNING: diffusion checkpoint 与当前 UNet2DModel 结构可能不完全一致")
+        print("missing_keys:", missing_keys)
+        print("unexpected_keys:", unexpected_keys)
+    model = model.to(device)
+    model.eval()
+
+    # 训练 classifier 时用于加噪，必须和 diffusion 训练时的 scheduler 一致
+    train_noise_scheduler = DDPMScheduler(
         num_train_timesteps=args.ddpm_num_steps,
         beta_schedule=args.ddpm_beta_schedule,
         prediction_type="epsilon",
     )
 
-    # -------------------------
-    # only-val / only-infer：只加载模型权重，不进入训练
-    # -------------------------
-    if args.run_mode in ["val_only", "infer_only"]:
-        if checkpoint is None:
-            raise ValueError(
-                "Checkpoint must be loaded for val_only / infer_only mode."
+    # 采样时使用 DDIM
+    sampling_scheduler = DDIMScheduler(
+        num_train_timesteps=args.ddpm_num_steps,
+        beta_schedule=args.ddpm_beta_schedule,
+        prediction_type="epsilon",
+    )
+    sampling_scheduler.set_timesteps(args.num_inference_steps, device=device)
+
+    # =====================================================
+    # 2) 从外部 diffusion UNet 构建 classifier
+    # =====================================================
+    classifier = build_classifier_from_trained_unet(
+        unet=model,
+        num_classes=args.num_classes,
+        feat_size=args.classifier_feat_size,
+        num_heads=args.classifier_num_heads,
+        use_rotary=args.classifier_use_rotary,
+        device=device,
+        resolution=args.resolution,
+    )
+
+    # -----------------------------
+    # 初始化实验元信息
+    # -----------------------------
+    experiment_metadata = {
+        "experiment_name": exp_name,
+        "experiment_dir": exp_folders["exp_dir"],
+        "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "task": "classifier_guidance",
+        "run_stage": "train_classifier_then_guided_sampling",
+        "seed": args.seed,
+        "device": str(device),
+        "data": {
+            "train_gt_csv_path": train_gt_csv_path,
+            "val_gt_csv_path": val_gt_csv_path,
+            "train_img_dir": train_img_dir,
+            "val_img_dir": val_img_dir,
+            "train_dataset_size": len(train_dataset),
+            "val_dataset_size": len(val_dataset),
+            "split_mode": "official_train_val_split",
+            "num_classes": num_classes,
+            "class_names": class_names,
+            "class_distribution": {
+                "train_dataset": train_class_distribution,
+                "val_dataset": val_class_distribution,
+            },
+        },
+        "diffusion_model": {
+            "source": "external_pretrained_checkpoint",
+            "checkpoint_path": args.diffusion_checkpoint,
+            "architecture": "UNet2DModel",
+            "resolution": args.resolution,
+            "ddpm_num_steps": args.ddpm_num_steps,
+            "ddpm_beta_schedule": args.ddpm_beta_schedule,
+            "num_inference_steps": args.num_inference_steps,
+            "use_class_conditioning": args.use_class_conditioning,
+            "time_scale_shift": args.time_scale_shift,
+            "status": "frozen_for_classifier_guidance",
+        },
+        "classifier": {
+            "type": "ClassifierWithUNetDownsample",
+            "backbone_source": "reuse_unet_down_blocks_and_mid_block_from_external_diffusion",
+            "num_classes": args.num_classes,
+            "feat_size": args.classifier_feat_size,
+            "num_heads": args.classifier_num_heads,
+            "use_rotary": args.classifier_use_rotary,
+            "trainable_parts": ["attention_pool", "classifier_head"],
+            "frozen_parts": ["unet_down_blocks", "unet_mid_block"],
+            "epochs": args.classifier_epochs,
+            "learning_rate": args.classifier_lr,
+            "batch_size": args.batch_size,
+        },
+        "guided_sampling": {
+            "sampler": "GuidedDDIMSampler",
+            "guidance_scale": args.guidance_scale,
+            "ddim_eta": args.ddim_eta,
+            "num_inference_steps": args.num_inference_steps,
+            "num_generate_total": args.num_generate_total,
+            "allocation_rule": "follow_train_class_distribution",
+        },
+        "paths": {
+            "metrics_csv": metrics_csv_path,
+            "metrics_json": metrics_json_path,
+            "metadata_json": metadata_json_path,
+            "last_classifier_checkpoint": os.path.join(
+                exp_folders["checkpoints_dir"], "classifier_last.pth.tar"
+            ),
+            "best_classifier_checkpoint": best_model_path,
+            "guided_samples_dir": exp_folders["samples_dir"],
+            "fid_dir": exp_folders["fid_dir"],
+            "fid_generated_dir": exp_folders["fid_generated_dir"],
+        },
+        "resume": {
+            "resume_path": args.resume,
+            "start_epoch": start_epoch,
+        },
+        "best_result": {
+            "best_epoch": best_epoch,
+            "best_val_balanced_acc": float(best_acc1),
+            "best_model_path": "",
+        },
+    }
+
+    save_json(experiment_metadata, metadata_json_path)
+
+    # =====================================================
+    # 3) 训练分类器
+    # =====================================================
+    # 根据训练集类别频数构造 class weights
+    train_counts = np.array(
+        [train_class_distribution[name] for name in class_names], dtype=np.float32
+    )
+    class_weights = train_counts.sum() / (len(train_counts) * train_counts)
+    class_weights = torch.tensor(class_weights, dtype=torch.float32)
+    train_classifier(
+        classifier=classifier,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        noise_scheduler=train_noise_scheduler,
+        epochs=args.classifier_epochs,
+        lr=args.classifier_lr,
+        device=device,
+        class_names=class_names,
+        exp_folders=exp_folders,
+        resume_path=args.resume,
+        save_every=args.classifier_save_every,
+        metrics_csv_path=metrics_csv_path,
+        metrics_json_path=metrics_json_path,
+        metadata_json_path=metadata_json_path,
+        class_weights=class_weights,
+    )
+
+    # =====================================================
+    # 4) 生成带引导的图像：按训练集比例分配总生成数
+    #    然后复用你代码2中的评估逻辑
+    # =====================================================
+    guided_sampler = GuidedDDIMSampler(
+        model=model,
+        classifier=classifier,
+        scheduler=sampling_scheduler,
+        device=device,
+        use_class_conditioning=args.use_class_conditioning,
+    )
+
+    # 按训练集类别比例分配总生成数量
+    gen_alloc = diffusion.allocate_samples_by_ratio(
+        dataset_count_dict=train_class_distribution,
+        num_total_samples=args.num_generate_total,
+    )
+
+    guided_generated_root = os.path.join(
+        exp_folders["samples_dir"], "guided_epoch_final"
+    )
+    os.makedirs(guided_generated_root, exist_ok=True)
+
+    print("Guided generation allocation:")
+    for class_name in class_names:
+        print(f"  {class_name}: {gen_alloc[class_name]}")
+
+    sample_counter = 0
+
+    for class_idx, class_name in enumerate(class_names):
+        cur_n = gen_alloc[class_name]
+        if cur_n <= 0:
+            continue
+
+        print(f"[Guided Sampling] class={class_name}, total={cur_n}")
+
+        # 这里新增：按 guided_gen_batch_size 分块生成，避免一次性爆显存
+        remaining = cur_n
+        inner_batch_idx = 0
+
+        while remaining > 0:
+            current_bs = min(args.guided_gen_batch_size, remaining)
+
+            # 如果 diffusion 是 class-conditioned，这里传给 UNet 的类别标签
+            if args.use_class_conditioning:
+                diffusion_class_labels = torch.full(
+                    (current_bs,),
+                    fill_value=class_idx,
+                    device=device,
+                    dtype=torch.long,
+                )
+            else:
+                diffusion_class_labels = None
+
+            # classifier guidance 的目标类别
+            target_labels = torch.full(
+                (current_bs,),
+                fill_value=class_idx,
+                device=device,
+                dtype=torch.long,
             )
 
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model = model.to(accelerator.device)
-        model.eval()
-
-        checkpoint_epoch = checkpoint.get("epoch", 0)
-
-        if args.run_mode == "val_only":
-            if accelerator.is_main_process:
-                run_validation_only(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    noise_scheduler=noise_scheduler,
-                    train_eval_loader=train_eval_loader,
-                    val_eval_loader=val_eval_loader,
-                    class_names=class_names,
-                    train_class_distribution=train_class_distribution,
-                    val_class_distribution=val_class_distribution,
-                    exp_folders=exp_folders,
-                    checkpoint_epoch=checkpoint_epoch,
-                )
-            accelerator.wait_for_everyone()
-            accelerator.end_training()
-            return
-
-        if args.run_mode == "infer_only":
-            if accelerator.is_main_process:
-                run_inference_only(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    noise_scheduler=noise_scheduler,
-                    class_names=class_names,
-                    exp_folders=exp_folders,
-                    checkpoint_epoch=checkpoint_epoch,
-                )
-            accelerator.wait_for_everyone()
-            accelerator.end_training()
-            return
-
-    # 优化器
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
-    )
-
-    num_update_steps_per_epoch = math.ceil(
-        len(train_dataloader) / args.gradient_accumulation_steps
-    )
-    max_train_steps = args.num_epochs * num_update_steps_per_epoch
-
-    # diffusers加速器学习率调度器
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=args.lr_warmup_steps * args.gradient_accumulation_steps,
-        num_training_steps=max_train_steps,
-    )
-
-    start_epoch = 0
-    global_step = 0
-    best_val_fid = float("inf")
-    best_train_fid = float("inf")
-
-    if checkpoint is not None:
-        model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
-        start_epoch = checkpoint["epoch"]
-        global_step = checkpoint.get("global_step", 0)
-        best_val_fid = checkpoint.get("best_val_fid", float("inf"))
-        best_train_fid = checkpoint.get("best_train_fid", float("inf"))
-        print(f"Resume training from epoch {start_epoch + 1}")
-        print(f"Recovered global_step = {global_step}")
-        print(f"Recovered best_val_fid = {best_val_fid}")
-        print(f"Recovered best_train_fid = {best_train_fid}")
-
-    # diffusers加速器
-    model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, lr_scheduler
-    )
-
-    if args.resume_from_checkpoint is not None and os.path.exists(metadata_json_path):
-        with open(metadata_json_path, "r", encoding="utf-8") as f:
-            experiment_metadata = json.load(f)
-        print(f"Loaded existing metadata from: {metadata_json_path}")
-
-        if "paths" not in experiment_metadata:
-            experiment_metadata["paths"] = {
-                "metrics_csv": metrics_csv_path,
-                "metrics_json": metrics_json_path,
-                "metadata_json": metadata_json_path,
-                "checkpoints_dir": exp_folders["checkpoints_dir"],
-                "samples_dir": exp_folders["samples_dir"],
-                "fid_dir": exp_folders["fid_dir"],
-                "fid_generated_dir": exp_folders["fid_generated_dir"],
-                "diffusers_model_index_copy": os.path.join(
-                    exp_folders["metadata_dir"], "diffusers_pipeline_model_index.json"
+            generated_images = guided_sampler.sample(
+                shape=(current_bs, 3, args.resolution, args.resolution),
+                target_labels=target_labels,
+                class_labels=diffusion_class_labels,
+                guidance_scale=args.guidance_scale,
+                eta=args.ddim_eta,
+                generator=torch.Generator(device=device).manual_seed(
+                    args.seed + class_idx * 1000 + inner_batch_idx
                 ),
-            }
-        if "best_result" not in experiment_metadata:
-            experiment_metadata["best_result"] = {
-                "best_epoch_by_val_fid": -1,
-                "best_val_fid": None,
-                "best_epoch_by_train_fid": -1,
-                "best_train_fid": None,
-                "best_model_path": "",
-            }
-
-        # 恢复训练时，把“当前实际使用参数”同步回 metadata
-        if args.run_mode == "train":
-            experiment_metadata = sync_experiment_metadata_for_resume(
-                experiment_metadata=experiment_metadata,
-                args=args,
-                start_epoch=start_epoch,
-                global_step=global_step,
+                show_progress=True,
             )
-    else:
-        experiment_metadata = {
-            "experiment_name": exp_name,
-            "run_mode": args.run_mode,
-            "experiment_dir": exp_folders["exp_dir"],
-            "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "seed": args.seed,
-            "mixed_precision": args.mixed_precision,
-            "resume_from_checkpoint": args.resume_from_checkpoint,
-            "data": {
-                "train_gt_csv_path": args.train_gt_csv_path,
-                "val_gt_csv_path": args.val_gt_csv_path,
-                "train_img_dir": args.train_img_dir,
-                "val_img_dir": args.val_img_dir,
-                "data_mode": args.data_mode,
-                "target_label": args.target_label,
-                "use_class_conditioning": args.use_class_conditioning,
-                "num_classes": num_classes,
-                "class_names": class_names,
-                "train_dataset_size": len(train_dataset),
-                "val_dataset_size": len(val_dataset),
-                "class_distribution": {
-                    "train_dataset": format_count_ratio_dict(train_class_distribution),
-                    "val_dataset": format_count_ratio_dict(val_class_distribution),
-                },
-            },
-            "model": {
-                "resolution": args.resolution,
-                "ddpm_num_steps": args.ddpm_num_steps,
-                "ddpm_num_inference_steps": args.ddpm_num_inference_steps,
-                "ddpm_beta_schedule": args.ddpm_beta_schedule,
-                "use_ddim_sampling": args.use_ddim_sampling,
-                "ddim_eta": args.ddim_eta,
-                "use_class_conditioning": args.use_class_conditioning,
-            },
-            "training": {
-                "train_batch_size": args.train_batch_size,
-                "eval_batch_size": args.eval_batch_size,
-                "num_epochs": args.num_epochs,
-                "learning_rate": args.learning_rate,
-                "gradient_accumulation_steps": args.gradient_accumulation_steps,
-                "start_epoch": start_epoch,
-                "initial_global_step": global_step,
-            },
-            "paths": {
-                "metrics_csv": metrics_csv_path,
-                "metrics_json": metrics_json_path,
-                "metadata_json": metadata_json_path,
-                "checkpoints_dir": exp_folders["checkpoints_dir"],
-                "samples_dir": exp_folders["samples_dir"],
-                "fid_dir": exp_folders["fid_dir"],
-                "fid_generated_dir": exp_folders["fid_generated_dir"],
-                "diffusers_model_index_copy": os.path.join(
-                    exp_folders["metadata_dir"], "diffusers_pipeline_model_index.json"
-                ),
-            },
-            "best_result": {
-                "best_epoch_by_val_fid": -1,
-                "best_val_fid": None,
-                "best_epoch_by_train_fid": -1,
-                "best_train_fid": None,
-                "best_model_path": "",
-            },
-        }
 
-    if accelerator.is_main_process:
-        save_json(experiment_metadata, metadata_json_path)
+            # [-1, 1] -> [0, 255]
+            generated_uint8 = (
+                ((generated_images.clamp(-1, 1) + 1.0) * 127.5)
+                .round()
+                .to(torch.uint8)
+                .cpu()
+            )
 
-    # -------------------------
-    # 训练
-    # -------------------------
-    for epoch in range(start_epoch, args.num_epochs):
-        model.train()
-        progress_bar = tqdm(
-            total=num_update_steps_per_epoch,
-            disable=not accelerator.is_local_main_process,
-            desc=f"Train Epoch [{epoch + 1}/{args.num_epochs}]",
-        )
+            for i in range(generated_uint8.size(0)):
+                pil_img = diffusion.uint8_tensor_to_pil(generated_uint8[i])
+                file_name = f"sample_{sample_counter:06d}_{class_name}.png"
+                pil_img.save(os.path.join(guided_generated_root, file_name))
+                sample_counter += 1
 
-        epoch_loss_sum = 0.0
-        epoch_loss_count = 0
+            remaining -= current_bs
+            inner_batch_idx += 1
 
-        for step, batch in enumerate(train_dataloader):
-            clean_images = batch["input"]
-            class_labels = batch["label"].to(clean_images.device).long()
-            noise = torch.randn_like(clean_images)
-            timesteps = torch.randint(
+    print(f"Guided samples saved to: {guided_generated_root}")
+
+    # =====================================================
+    # 5) 复用你代码2中的评估逻辑
+    #    这里不重写你的评估函数，直接调用你已有的 overall + per-class 评估入口
+    # =====================================================
+    # 说明：
+    # - 如果你的 evaluate_split_with_overall_and_per_class_metrics 当前只能“边生成边评估”，
+    #   你需要让它支持一个可选参数 generated_dir_override；
+    # - 这里按“直接评估已生成目录”来调用。
+    guided_eval_result = diffusion.evaluate_split_with_overall_and_per_class_metrics(
+        split_name="guided_train_ratio",
+        real_loader=val_loader,  # 你也可以换成 train_loader，看你希望对哪个 split 比
+        accelerator=None,  # 这里如果你的函数内部不依赖 accelerator，可以传 None
+        model=None,  # 因为这里不再现场生成
+        noise_scheduler=None,
+        class_names=class_names,
+        dataset_count_dict=train_class_distribution,
+        num_total_samples=args.num_generate_total,
+        fid_dir=exp_folders["fid_dir"],
+        fid_generated_dir=exp_folders["fid_generated_dir"],
+        epoch=0,
+        resolution=args.resolution,
+        eval_batch_size=args.batch_size,
+        num_inference_steps=args.num_inference_steps,
+        use_ddim_sampling=True,
+        ddim_eta=args.ddim_eta,
+        use_class_conditioning=args.use_class_conditioning,
+        ipr_k=args.ipr_k,
+        kid_subsets=50,
+        kid_subset_size=50,
+        compute_per_class_metrics=True,
+        per_class_max_real_samples=args.num_generate_total,
+        generated_dir_override=guided_generated_root,  # 需要你在评估函数里支持这个参数
+    )
+
+    print("Guided evaluation result:")
+    print(guided_eval_result)
+
+
+# =========================================================
+# 6. classifier guidance 相关
+# =========================================================
+
+import os
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from tqdm import tqdm
+from typing import Optional, Union, Tuple
+from diffusers import UNet2DModel, DDIMScheduler
+from timm.layers import AttentionPool2d as AbsAttentionPool2d
+from timm.layers import RotAttentionPool2d
+import diffusion
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    confusion_matrix,
+    classification_report,
+)
+
+
+def evaluate_guidance_classifier(
+    classifier,
+    data_loader,
+    noise_scheduler,
+    device,
+    class_names,
+):
+    """
+    评估用于 classifier guidance 的分类器 p(y | x_t, t)
+
+    评估方式：
+    - 对每张图随机采样一个 timestep t
+    - 用 diffusion 的 forward process 加噪得到 x_t
+    - 让 classifier 预测类别
+    """
+    classifier.eval()
+    criterion = nn.CrossEntropyLoss()
+
+    all_labels = []
+    all_preds = []
+    total_loss = 0.0
+    total_count = 0
+    cpu_rng = torch.Generator(device="cpu").manual_seed(12345)
+    gpu_rng = None
+    if device.type == "cuda":
+        gpu_rng = torch.Generator(device=device).manual_seed(12345)
+    with torch.no_grad():
+        for images, labels, sample_ids in data_loader:
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device).long()
+
+            t = torch.randint(
                 0,
                 noise_scheduler.config.num_train_timesteps,
-                (clean_images.shape[0],),
-                device=clean_images.device,
+                (images.shape[0],),
+                device=device,
+                generator=gpu_rng if device.type == "cuda" else None,
             ).long()
-            noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
 
-            with accelerator.accumulate(model):
-                # -------------------------
-                # 开启类别条件时，把 class_labels 传进去
-                # -------------------------
-                if args.use_class_conditioning:
-                    noise_pred = model(
-                        noisy_images, timesteps, class_labels=class_labels
-                    ).sample
-                else:
-                    noise_pred = model(noisy_images, timesteps).sample
-
-                loss = F.mse_loss(noise_pred.float(), noise.float())
-                accelerator.backward(loss)
-                if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-
-            loss_item = loss.detach().item()
-            epoch_loss_sum += loss_item * clean_images.size(0)
-            epoch_loss_count += clean_images.size(0)
-
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                global_step += 1
-                progress_bar.set_postfix(
-                    {"loss": f"{loss_item:.6f}", "update": global_step}
+            if device.type == "cuda":
+                noise = torch.randn(
+                    images.shape,
+                    device=device,
+                    generator=gpu_rng,
+                    dtype=images.dtype,
                 )
+            else:
+                noise = torch.randn(
+                    images.shape,
+                    device=device,
+                    generator=cpu_rng,
+                    dtype=images.dtype,
+                )
+            noisy_images = noise_scheduler.add_noise(images, noise, t)
+
+            logits = classifier(noisy_images, t)
+            loss = criterion(logits, labels)
+
+            preds = logits.argmax(dim=1)
+
+            total_loss += loss.item() * images.size(0)
+            total_count += images.size(0)
+
+            all_labels.extend(labels.cpu().tolist())
+            all_preds.extend(preds.cpu().tolist())
+
+    avg_loss = total_loss / max(total_count, 1)
+    acc = sum(int(p == y) for p, y in zip(all_preds, all_labels)) / max(
+        len(all_labels), 1
+    )
+    bal_acc = balanced_accuracy_score(all_labels, all_preds)
+    cm = confusion_matrix(all_labels, all_preds, labels=list(range(len(class_names))))
+
+    report = classification_report(
+        all_labels,
+        all_preds,
+        labels=list(range(len(class_names))),
+        target_names=class_names,
+        digits=4,
+        output_dict=True,
+        zero_division=0,
+    )
+
+    per_class_recall = {
+        class_name: float(report[class_name]["recall"]) for class_name in class_names
+    }
+    per_class_precision = {
+        class_name: float(report[class_name]["precision"]) for class_name in class_names
+    }
+    per_class_f1 = {
+        class_name: float(report[class_name]["f1-score"]) for class_name in class_names
+    }
+
+    result = {
+        "loss": float(avg_loss),
+        "accuracy": float(acc),
+        "balanced_accuracy": float(bal_acc),
+        "per_class_recall": per_class_recall,
+        "per_class_precision": per_class_precision,
+        "per_class_f1": per_class_f1,
+        "confusion_matrix": cm.tolist(),
+    }
+    return result
+
+
+class ClassifierWithUNetDownsample(nn.Module):
+    """
+    基于已训练 UNet2DModel 的下采样路径 + 中间块做分类器
+    """
+
+    def __init__(
+        self,
+        unet: UNet2DModel,
+        num_classes: int = 7,
+        feat_size: Optional[Union[int, Tuple[int, int]]] = None,
+        num_heads: int = 8,
+        use_rotary: bool = False,
+    ):
+        super().__init__()
+
+        self.conv_in = unet.conv_in
+        self.down_blocks = unet.down_blocks
+        self.mid_block = unet.mid_block
+        self.time_proj = unet.time_proj
+        self.time_embedding = unet.time_embedding
+        self.num_features = unet.config.block_out_channels[-1]
+
+        self.use_rotary = use_rotary
+        self.feat_size = None
+
+        if use_rotary:
+            self.attention_pool = RotAttentionPool2d(
+                in_features=self.num_features,
+                out_features=self.num_features,
+                num_heads=num_heads,
+                qkv_bias=True,
+            )
+        else:
+            assert feat_size is not None, "使用绝对位置编码时必须指定 feat_size"
+            self.feat_size = (
+                feat_size if isinstance(feat_size, tuple) else (feat_size, feat_size)
+            )
+            self.attention_pool = AbsAttentionPool2d(
+                in_features=self.num_features,
+                feat_size=self.feat_size,
+                out_features=self.num_features,
+                num_heads=num_heads,
+                qkv_bias=True,
+            )
+
+        self.classifier = nn.Linear(self.num_features, num_classes)
+        self._freeze_unet_backbone()
+
+    def set_frozen_backbone_eval(self):
+        """
+        冻结的 UNet backbone 始终保持在 eval 模式
+        只训练 attention_pool 和 classifier
+        """
+        self.conv_in.eval()
+        self.down_blocks.eval()
+        self.mid_block.eval()
+        self.time_proj.eval()
+        self.time_embedding.eval()
+
+    def _freeze_unet_backbone(self):
+        for param in self.conv_in.parameters():
+            param.requires_grad = False
+        for param in self.down_blocks.parameters():
+            param.requires_grad = False
+        for param in self.mid_block.parameters():
+            param.requires_grad = False
+        for param in self.time_proj.parameters():
+            param.requires_grad = False
+        for param in self.time_embedding.parameters():
+            param.requires_grad = False
+
+    def forward(self, x: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
+        # 这里 timesteps 必传，因为 classifier guidance 训练的是 p(y | x_t, t)
+        if timesteps.ndim == 0:
+            timesteps = timesteps[None]
+        timesteps = timesteps.to(x.device).long()
+
+        # 若只传了单个 timestep，扩展到 batch 大小
+        if timesteps.shape[0] == 1 and x.shape[0] > 1:
+            timesteps = timesteps.expand(x.shape[0])
+
+        temb = self.time_proj(timesteps)
+        temb = self.time_embedding(temb)
+
+        # 关键：先经过 UNet 的输入卷积
+        x = self.conv_in(x)
+
+        # 按 UNet2DModel 的 down_blocks 调用方式来走
+        skip_sample = None
+        for downsample_block in self.down_blocks:
+            if hasattr(downsample_block, "skip_conv"):
+                x, _, skip_sample = downsample_block(
+                    hidden_states=x, temb=temb, skip_sample=skip_sample
+                )
+            else:
+                x, _ = downsample_block(hidden_states=x, temb=temb)
+
+        x = self.mid_block(x, temb)
+
+        pooled = self.attention_pool(x)
+        logits = self.classifier(pooled)
+        return logits
+
+
+def build_classifier_from_trained_unet(
+    unet: UNet2DModel,
+    num_classes: int = 7,
+    feat_size: Union[int, Tuple[int, int]] = (4, 4),
+    num_heads: int = 8,
+    use_rotary: bool = False,
+    device: str = "cuda",
+    resolution: int = 128,
+) -> ClassifierWithUNetDownsample:
+    """
+    直接从“已加载权重的 UNet2DModel”构建 classifier
+    如果使用绝对位置编码池化，则自动推断最后特征图大小
+    """
+    if not use_rotary:
+        # 根据 down_blocks 中包含 downsampler 的数量，估算总下采样倍数
+        downsample_factor = 1
+        for block in unet.down_blocks:
+            if hasattr(block, "downsamplers") and block.downsamplers is not None:
+                downsample_factor *= 2
+
+        inferred_feat_size = resolution // downsample_factor
+        feat_size = (inferred_feat_size, inferred_feat_size)
+
+    classifier = ClassifierWithUNetDownsample(
+        unet=unet,
+        num_classes=num_classes,
+        feat_size=feat_size,
+        num_heads=num_heads,
+        use_rotary=use_rotary,
+    ).to(device)
+    return classifier
+
+
+class GuidedDDIMSampler:
+    """
+    带 classifier gradient guidance 的 DDIM 采样器
+    """
+
+    def __init__(
+        self,
+        model: UNet2DModel,
+        classifier: nn.Module,
+        scheduler: DDIMScheduler,
+        device: str = "cuda",
+        use_class_conditioning: bool = False,
+    ):
+        self.model = model
+        self.classifier = classifier
+        self.scheduler = scheduler
+        self.device = device
+        self.use_class_conditioning = use_class_conditioning
+
+    def sample(
+        self,
+        shape: tuple,
+        target_labels: torch.Tensor,
+        class_labels: Optional[torch.Tensor] = None,
+        guidance_scale: float = 1.0,
+        eta: float = 0.0,
+        generator: Optional[torch.Generator] = None,
+        show_progress: bool = True,
+    ) -> torch.Tensor:
+        """
+        返回范围仍然是 diffusion 内部常用的 [-1, 1] 张量
+        """
+        self.model.eval()
+        self.classifier.eval()
+
+        x = torch.randn(shape, device=self.device, generator=generator)
+
+        timesteps = self.scheduler.timesteps
+        iterator = tqdm(
+            timesteps, disable=not show_progress, desc="Guided DDIM Sampling"
+        )
+
+        for t in iterator:
+            # classifier guidance 需要对 x 求梯度，所以这里不能整个套 torch.no_grad()
+            x_in = x.detach().requires_grad_(True)
+
+            # 1) UNet 预测 epsilon
+            with torch.no_grad():
+                if self.use_class_conditioning:
+                    eps = self.model(x_in, t, class_labels=class_labels).sample
+                else:
+                    eps = self.model(x_in, t).sample
+
+            # 2) classifier 计算 log p(y | x_t, t) 对 x_t 的梯度
+            t_batch = torch.full(
+                (x.shape[0],),
+                fill_value=int(t),
+                device=self.device,
+                dtype=torch.long,
+            )
+            logits = self.classifier(x_in, t_batch)
+            log_probs = F.log_softmax(logits, dim=-1)
+            selected = log_probs[
+                torch.arange(x.shape[0], device=self.device), target_labels
+            ]
+            grad = torch.autograd.grad(selected.sum(), x_in)[0]
+
+            # 3) 按 classifier guidance 公式修正 epsilon
+            alpha_bar_t = self.scheduler.alphas_cumprod[t].to(self.device)
+            eps_guided = eps - guidance_scale * torch.sqrt(1.0 - alpha_bar_t) * grad
+
+            # 4) DDIM 更新
+            with torch.no_grad():
+                step_output = self.scheduler.step(
+                    model_output=eps_guided,
+                    timestep=t,
+                    sample=x,
+                    eta=eta,
+                    return_dict=True,
+                )
+                x = step_output.prev_sample
+
+        return x
+
+
+def train_classifier(
+    classifier: ClassifierWithUNetDownsample,
+    train_loader,
+    val_loader,
+    noise_scheduler,
+    epochs: int = 50,
+    lr: float = 1e-4,
+    device: str = "cuda",
+    class_names=None,
+    exp_folders=None,
+    resume_path: str = None,
+    save_every: int = 5,
+    metrics_csv_path: str = None,
+    metrics_json_path: str = None,
+    metadata_json_path: str = None,
+    class_weights: torch.Tensor = None,
+):
+    optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, classifier.parameters()),
+        lr=lr,
+        weight_decay=0.01,
+    )
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights.to(device) if class_weights is not None else None
+    )
+    start_epoch = 0
+    best_val_bal_acc = -1.0
+    best_epoch = -1
+
+    last_ckpt_path = None
+    best_ckpt_path = None
+    if exp_folders is not None:
+        last_ckpt_path = os.path.join(
+            exp_folders["checkpoints_dir"], "classifier_last.pth.tar"
+        )
+        best_ckpt_path = os.path.join(
+            exp_folders["checkpoints_dir"], "classifier_best.pth.tar"
+        )
+
+    # resume
+    if resume_path is not None and os.path.isfile(resume_path):
+        print(f"=> resume classifier training from: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=device)
+        classifier.load_state_dict(checkpoint["classifier_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        start_epoch = checkpoint.get("epoch", 0)
+        best_val_bal_acc = checkpoint.get("best_val_balanced_acc", -1.0)
+        best_epoch = checkpoint.get("best_epoch", -1)
+
+        print(f"=> resumed start_epoch = {start_epoch}")
+        print(f"=> resumed best_val_balanced_acc = {best_val_bal_acc:.4f}")
+        print(f"=> resumed best_epoch = {best_epoch}")
+
+    for epoch in range(start_epoch, epochs):
+        classifier.train()
+        total_loss = 0.0
+        total_count = 0
+        all_train_labels = []
+        all_train_preds = []
+
+        progress_bar = tqdm(
+            total=len(train_loader),
+            desc=f"Classifier Train Epoch [{epoch + 1}/{epochs}]",
+            leave=True,
+        )
+
+        for batch_idx, batch in enumerate(train_loader):
+            images = batch[0].to(device)
+            labels = batch[1].to(device).long()
+
+            t = torch.randint(
+                0,
+                noise_scheduler.config.num_train_timesteps,
+                (images.shape[0],),
+                device=device,
+            ).long()
+
+            noise = torch.randn_like(images)
+            noisy_images = noise_scheduler.add_noise(images, noise, t)
+
+            logits = classifier(noisy_images, t)
+            loss = criterion(logits, labels)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item() * images.size(0)
+            total_count += images.size(0)
+
+            # 保存训练阶段的标签和预测结果
+            all_train_labels.extend(labels.cpu().tolist())
+            all_train_preds.extend(logits.argmax(dim=1).cpu().tolist())
+
+            progress_bar.update(1)
+            progress_bar.set_postfix(
+                batch_loss=f"{loss.item():.4f}",
+                lr=f"{optimizer.param_groups[0]['lr']:.2e}",
+            )
 
         progress_bar.close()
-        accelerator.wait_for_everyone()
 
-        train_loss_epoch = epoch_loss_sum / max(epoch_loss_count, 1)
+        # 计算训练准确率
+        train_acc = accuracy_score(all_train_labels, all_train_preds)
+        print(f"train_accuracy        : {train_acc:.4f}")
 
-        need_save_images = ((epoch + 1) % args.save_images_epochs == 0) or (
-            epoch == args.num_epochs - 1
+        train_loss = total_loss / max(total_count, 1)
+
+        # 验证阶段
+        val_result = evaluate_guidance_classifier(
+            classifier=classifier,
+            data_loader=val_loader,
+            noise_scheduler=noise_scheduler,
+            device=device,
+            class_names=class_names,
         )
-        need_save_model = ((epoch + 1) % args.save_model_epochs == 0) or (
-            epoch == args.num_epochs - 1
+
+        print(
+            f"[Epoch {epoch + 1}] "
+            f"train_loss={train_loss:.4f}, "
+            f"train_acc={train_acc:.4f}, "
+            f"val_loss={val_result['loss']:.4f}, "
+            f"val_acc={val_result['accuracy']:.4f}, "
+            f"val_bal_acc={val_result['balanced_accuracy']:.4f}"
         )
 
-        enable_train_fid = args.num_fid_samples_train > 0
-        enable_val_fid = args.num_fid_samples_val > 0
+        # 保存混淆矩阵
+        cm_csv_path, cm_png_path = save_confusion_matrix_artifacts(
+            y_true=all_train_labels,
+            y_pred=all_train_preds,
+            class_names=class_names,
+            save_dir=exp_folders["confusion_matrices_dir"],
+            epoch=epoch + 1,
+        )
 
-        need_eval = (
-            ((epoch + 1) % args.eval_epochs == 0) or (epoch == args.num_epochs - 1)
-        ) and (enable_train_fid or enable_val_fid)
+        print(f"Confusion matrix saved to: {cm_png_path}")
 
-        fid_train_value = None
-        fid_val_value = None
-        train_kid_mean = None
-        train_kid_std = None
-        val_kid_mean = None
-        val_kid_std = None
-        train_precision = None
-        train_recall = None
-        val_precision = None
-        val_recall = None
-        train_fid_json_path = ""
-        val_fid_json_path = ""
-        train_per_class_json_path = ""
-        val_per_class_json_path = ""
-        train_generated_dir = ""
-        val_generated_dir = ""
-        train_per_class_generated_dir = ""
-        val_per_class_generated_dir = ""
-        sample_dir = ""
-        diffusers_model_index_copy_path = ""
+        # 处理模型保存
+        checkpoint_state = {
+            "epoch": epoch + 1,
+            "classifier_state_dict": classifier.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "train_loss": float(train_loss),
+            "train_accuracy": float(train_acc),
+            "val_loss": float(val_result["loss"]),
+            "val_accuracy": float(val_result["accuracy"]),
+            "val_balanced_accuracy": float(val_result["balanced_accuracy"]),
+            "best_val_balanced_acc": float(
+                max(best_val_bal_acc, val_result["balanced_accuracy"])
+            ),
+            "best_epoch": int(best_epoch),
+        }
 
-        if accelerator.is_main_process:
-            unet = accelerator.unwrap_model(model)
+        if last_ckpt_path is not None:
+            torch.save(checkpoint_state, last_ckpt_path)
+            print(f"Last classifier checkpoint saved to: {last_ckpt_path}")
 
-            # 这里只保留 pipeline 的保存能力
-            if args.use_ddim_sampling:
-                save_scheduler = DDIMScheduler.from_config(noise_scheduler.config)
-                pipeline = DDIMPipeline(unet=unet, scheduler=save_scheduler)
-            else:
-                pipeline = DDPMPipeline(unet=unet, scheduler=noise_scheduler)
+        if val_result["balanced_accuracy"] > best_val_bal_acc:
+            best_val_bal_acc = val_result["balanced_accuracy"]
+            best_epoch = epoch + 1
 
-            pipeline = pipeline.to(accelerator.device)
+            checkpoint_state["best_val_balanced_acc"] = float(best_val_bal_acc)
+            checkpoint_state["best_epoch"] = best_epoch
 
-            # 1) 保存可视化样本
-            if need_save_images:
-                epoch_dir = os.path.join(
-                    exp_folders["samples_dir"], f"epoch_{epoch + 1:03d}"
-                )
-                os.makedirs(epoch_dir, exist_ok=True)
-
-                # 为了让可视化样本在 conditional 时也有明确类别，这里按训练集比例分配
-                sample_alloc = allocate_samples_by_ratio(
-                    train_class_distribution, args.eval_batch_size
-                )
-                sampling_scheduler = build_sampling_scheduler(
-                    noise_scheduler=noise_scheduler,
-                    use_ddim_sampling=args.use_ddim_sampling,
-                )
-
-                sample_counter = 0
-                for class_idx, class_name in enumerate(class_names):
-                    cur_n = sample_alloc[class_name]
-                    if cur_n <= 0:
-                        continue
-
-                    generator = torch.Generator(device=accelerator.device).manual_seed(
-                        0 + class_idx
-                    )
-                    if args.use_class_conditioning:
-                        class_labels = torch.full(
-                            (cur_n,),
-                            fill_value=class_idx,
-                            device=accelerator.device,
-                            dtype=torch.long,
-                        )
-                    else:
-                        class_labels = None
-
-                    samples_uint8 = sample_images_with_model(
-                        model=unet,
-                        sampling_scheduler=sampling_scheduler,
-                        device=accelerator.device,
-                        resolution=args.resolution,
-                        batch_size=cur_n,
-                        num_inference_steps=args.ddpm_num_inference_steps,
-                        generator=generator,
-                        use_class_conditioning=args.use_class_conditioning,
-                        class_labels=class_labels,
-                        ddim_eta=args.ddim_eta,
-                    )
-
-                    for i in range(samples_uint8.size(0)):
-                        pil_img = uint8_tensor_to_pil(samples_uint8[i])
-                        if args.use_class_conditioning:
-                            file_name = f"sample_{sample_counter:03d}_{class_name}.png"
-                        else:
-                            file_name = f"sample_{sample_counter:03d}.png"
-                        pil_img.save(os.path.join(epoch_dir, file_name))
-                        sample_counter += 1
-
-                sample_dir = epoch_dir
-                print(f"Samples saved to: {sample_dir}")
-
-            # 2) 计算 overall + per-class 指标
-            if need_eval:
-                print(f"\nEpoch {epoch + 1}/{args.num_epochs}")
-                print("-" * 60)
-
-                if enable_train_fid:
-                    train_eval_result = (
-                        evaluate_split_with_overall_and_per_class_metrics(
-                            split_name="train",
-                            real_loader=train_eval_loader,
-                            accelerator=accelerator,
-                            model=unet,
-                            noise_scheduler=noise_scheduler,
-                            class_names=class_names,
-                            dataset_count_dict=train_class_distribution,
-                            num_total_samples=args.num_fid_samples_train,
-                            fid_dir=exp_folders["fid_dir"],
-                            fid_generated_dir=exp_folders["fid_generated_dir"],
-                            epoch=epoch + 1,
-                            resolution=args.resolution,
-                            eval_batch_size=args.eval_batch_size,
-                            num_inference_steps=args.ddpm_num_inference_steps,
-                            use_ddim_sampling=args.use_ddim_sampling,
-                            ddim_eta=args.ddim_eta,
-                            use_class_conditioning=args.use_class_conditioning,
-                            ipr_k=args.ipr_k,
-                            kid_subsets=50,
-                            kid_subset_size=50,
-                            compute_per_class_metrics=args.enable_per_class_metrics,
-                            per_class_max_real_samples=(
-                                args.num_fid_samples_train
-                                if args.enable_per_class_metrics
-                                else None
-                            ),
-                        )
-                    )
-                    fid_train_value = train_eval_result["overall_fid"]
-                    train_kid_mean = train_eval_result["overall_kid_mean"]
-                    train_kid_std = train_eval_result["overall_kid_std"]
-                    train_precision = train_eval_result["overall_precision"]
-                    train_recall = train_eval_result["overall_recall"]
-                    train_fid_json_path = train_eval_result["overall_json_path"]
-                    train_per_class_json_path = train_eval_result["per_class_json_path"]
-                    train_generated_dir = train_eval_result["generated_dir"]
-                    train_per_class_generated_dir = train_eval_result[
-                        "per_class_generated_dir"
-                    ]
-                else:
-                    print("Train FID skipped (--num_fid_samples_train 0).")
-
-                if enable_val_fid:
-                    val_eval_result = evaluate_split_with_overall_and_per_class_metrics(
-                        split_name="val",
-                        real_loader=val_eval_loader,
-                        accelerator=accelerator,
-                        model=unet,
-                        noise_scheduler=noise_scheduler,
-                        class_names=class_names,
-                        dataset_count_dict=val_class_distribution,
-                        num_total_samples=args.num_fid_samples_val,
-                        fid_dir=exp_folders["fid_dir"],
-                        fid_generated_dir=exp_folders["fid_generated_dir"],
-                        epoch=epoch + 1,
-                        resolution=args.resolution,
-                        eval_batch_size=args.eval_batch_size,
-                        num_inference_steps=args.ddpm_num_inference_steps,
-                        use_ddim_sampling=args.use_ddim_sampling,
-                        ddim_eta=args.ddim_eta,
-                        use_class_conditioning=args.use_class_conditioning,
-                        ipr_k=args.ipr_k,
-                        kid_subsets=50,
-                        kid_subset_size=50,
-                        compute_per_class_metrics=False,
-                        per_class_max_real_samples=None,
-                    )
-                    fid_val_value = val_eval_result["overall_fid"]
-                    val_kid_mean = val_eval_result["overall_kid_mean"]
-                    val_kid_std = val_eval_result["overall_kid_std"]
-                    val_precision = val_eval_result["overall_precision"]
-                    val_recall = val_eval_result["overall_recall"]
-                    val_fid_json_path = val_eval_result["overall_json_path"]
-                    val_per_class_json_path = val_eval_result[
-                        "per_class_json_path"
-                    ]  # 这里会保持为空字符串
-                    val_generated_dir = val_eval_result["generated_dir"]
-                    val_per_class_generated_dir = val_eval_result[
-                        "per_class_generated_dir"
-                    ]
-                else:
-                    print("Val FID skipped (--num_fid_samples_val 0).")
-
-            # 3) 保存模型
-            # best checkpoint 只依据 overall train FID
-            is_best = False
-            if fid_train_value is not None:
-                if fid_train_value < best_train_fid:
-                    best_train_fid = fid_train_value
-                    is_best = True
-                    experiment_metadata["best_result"]["best_epoch_by_train_fid"] = (
-                        epoch + 1
-                    )
-                    experiment_metadata["best_result"]["best_train_fid"] = float(
-                        fid_train_value
-                    )
-
-            checkpoint_state = {
-                "epoch": epoch + 1,
-                "global_step": global_step,
-                "model_state_dict": unet.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-                "best_val_fid": best_val_fid,
-                "best_train_fid": best_train_fid,
-                "args": vars(args),
-                "exp_dir": exp_folders["exp_dir"],
-            }
-
-            if need_save_model or is_best:
-                save_checkpoint(
-                    checkpoint_state,
-                    is_best=is_best,
-                    save_dir=exp_folders["checkpoints_dir"],
-                    filename="last.pth.tar",
-                )
-
-                if is_best:
-                    experiment_metadata["best_result"][
-                        "best_model_path"
-                    ] = best_model_path
-
-                pipeline.save_pretrained(exp_folders["exp_dir"])
-                diffusers_model_index_copy_path = save_diffusers_model_index_copy(
-                    exp_dir=exp_folders["exp_dir"],
-                    metadata_dir=exp_folders["metadata_dir"],
-                )
+            if best_ckpt_path is not None:
+                torch.save(checkpoint_state, best_ckpt_path)
                 print(
-                    f"Checkpoint saved to: {os.path.join(exp_folders['checkpoints_dir'], 'last.pth.tar')}"
-                )
-                print(
-                    f"Diffusers model index copy saved to: {diffusers_model_index_copy_path}"
-                )
-                if is_best:
-                    print("New best model saved.")
-
-            # 每次评估时，额外保存一个 epoch 快照
-            if need_eval:
-                eval_ckpt_name = f"epoch_{epoch + 1:03d}.pth.tar"
-                save_checkpoint(
-                    checkpoint_state,
-                    is_best=False,
-                    save_dir=exp_folders["checkpoints_dir"],
-                    filename=eval_ckpt_name,
-                )
-                print(
-                    f"Eval snapshot saved to: {os.path.join(exp_folders['checkpoints_dir'], eval_ckpt_name)}"
+                    f"New best classifier saved to: {best_ckpt_path} "
+                    f"(epoch={best_epoch}, bal_acc={best_val_bal_acc:.4f})"
                 )
 
-                pipeline.save_pretrained(exp_folders["exp_dir"])
-                diffusers_model_index_copy_path = save_diffusers_model_index_copy(
-                    exp_dir=exp_folders["exp_dir"],
-                    metadata_dir=exp_folders["metadata_dir"],
-                )
-                print(
-                    f"Checkpoint saved to: {os.path.join(exp_folders['checkpoints_dir'], 'last.pth.tar')}"
-                )
-                print(
-                    f"Diffusers model index copy saved to: {diffusers_model_index_copy_path}"
-                )
-                if is_best:
-                    print("New best model saved.")
+        if metrics_csv_path is not None:
+            append_classifier_metrics_csv(metrics_csv_path, checkpoint_state)
 
-        accelerator.wait_for_everyone()
+        if metrics_json_path is not None:
+            append_classifier_metrics_json(metrics_json_path, checkpoint_state)
 
-        # -------------------------
-        # 每个评估 epoch 记录信息
-        # -------------------------
-        if accelerator.is_main_process and need_eval:
-            epoch_row = {
-                "epoch": epoch + 1,
-                "train_loss": float(train_loss_epoch),
-                "train_fid": (
-                    float(fid_train_value) if fid_train_value is not None else None
-                ),
-                "train_kid_mean": (
-                    float(train_kid_mean) if train_kid_mean is not None else None
-                ),
-                "train_kid_std": (
-                    float(train_kid_std) if train_kid_std is not None else None
-                ),
-                "val_fid": float(fid_val_value) if fid_val_value is not None else None,
-                "val_kid_mean": (
-                    float(val_kid_mean) if val_kid_mean is not None else None
-                ),
-                "val_kid_std": float(val_kid_std) if val_kid_std is not None else None,
-                "train_precision": (
-                    float(train_precision) if train_precision is not None else None
-                ),
-                "train_recall": (
-                    float(train_recall) if train_recall is not None else None
-                ),
-                "val_precision": (
-                    float(val_precision) if val_precision is not None else None
-                ),
-                "val_recall": float(val_recall) if val_recall is not None else None,
-                "sample_dir": sample_dir,
-                "train_fid_json_path": train_fid_json_path,
-                "val_fid_json_path": val_fid_json_path,
-                "train_per_class_json_path": train_per_class_json_path,
-                "val_per_class_json_path": val_per_class_json_path,
-                "train_generated_dir": train_generated_dir,
-                "val_generated_dir": val_generated_dir,
-                "train_per_class_generated_dir": train_per_class_generated_dir,
-                "val_per_class_generated_dir": val_per_class_generated_dir,
-                "checkpoint_path": os.path.join(
-                    exp_folders["checkpoints_dir"], "last.pth.tar"
-                ),
-                "diffusers_model_index_copy_path": diffusers_model_index_copy_path,
-            }
-            update_epoch_metrics_csv(metrics_csv_path, epoch_row)
-            update_epoch_metrics_json(metrics_json_path, epoch_row)
+    print(
+        f"\nBest classifier epoch: {best_epoch}, best val balanced accuracy: {best_val_bal_acc:.4f}"
+    )
 
-            experiment_metadata["last_epoch_finished"] = epoch + 1
-            experiment_metadata["updated_time"] = datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            experiment_metadata["paths"]["diffusers_model_index_copy"] = os.path.join(
-                exp_folders["metadata_dir"], "diffusers_pipeline_model_index.json"
-            )
-            save_json(experiment_metadata, metadata_json_path)
 
-    accelerator.end_training()
+import csv
+import json
+from tqdm import tqdm
+
+
+def append_classifier_metrics_csv(csv_path, row_dict):
+    """
+    把每个 epoch 的扁平指标追加写入 CSV
+    """
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+
+    flat_row = {
+        "epoch": row_dict.get("epoch"),
+        "train_loss": row_dict.get("train_loss"),
+        "train_accuracy": row_dict.get("train_accuracy"),
+        "val_loss": row_dict.get("val_loss"),
+        "val_accuracy": row_dict.get("val_accuracy"),
+        "val_balanced_accuracy": row_dict.get("val_balanced_accuracy"),
+    }
+
+    file_exists = os.path.exists(csv_path)
+    with open(csv_path, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=list(flat_row.keys()))
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(flat_row)
+
+
+def append_classifier_metrics_json(json_path, row_dict):
+    """
+    把每个 epoch 的完整指标追加写入 JSON
+    """
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = []
+
+    data.append(row_dict)
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def update_classifier_experiment_metadata(
+    metadata_json_path,
+    epoch,
+    best_epoch,
+    best_val_balanced_acc,
+    last_checkpoint_path,
+    best_checkpoint_path,
+):
+    """
+    每个 epoch 结束后，把实验元数据里的训练进度和 best 结果同步更新
+    """
+    if os.path.exists(metadata_json_path):
+        with open(metadata_json_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+    else:
+        metadata = {}
+
+    metadata["last_epoch_finished"] = epoch
+    metadata["updated_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if "paths" not in metadata:
+        metadata["paths"] = {}
+    metadata["paths"]["last_classifier_checkpoint"] = last_checkpoint_path
+    metadata["paths"]["best_classifier_checkpoint"] = best_checkpoint_path
+
+    if "best_result" not in metadata:
+        metadata["best_result"] = {}
+
+    metadata["best_result"]["best_epoch"] = best_epoch
+    metadata["best_result"]["best_val_balanced_acc"] = float(best_val_balanced_acc)
+    metadata["best_result"]["best_model_path"] = (
+        best_checkpoint_path if os.path.exists(best_checkpoint_path) else ""
+    )
+
+    with open(metadata_json_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+
+class ProgressMeter:
+    """保留原类，但当前主流程已不再使用这个冗长打印方式"""
+
+    def __init__(self, num_batches, meters, prefix=""):
+        self.batch_fmtstr = self._get_batch_fmtstr(num_batches)
+        self.meters = meters
+        self.prefix = prefix
+
+    def display(self, batch):
+        entries = [self.prefix + self.batch_fmtstr.format(batch)]
+        entries += [str(meter) for meter in self.meters if str(meter) != ""]
+        print("\t".join(entries))
+
+    def display_summary(self):
+        entries = [" *"]
+        entries += [meter.summary() for meter in self.meters if meter.summary() != ""]
+        print(" ".join(entries))
+
+    def _get_batch_fmtstr(self, num_batches):
+        num_digits = len(str(num_batches))
+        fmt = "{:" + str(num_digits) + "d}"
+        return "[" + fmt + "/" + fmt.format(num_batches) + "]"
 
 
 # =========================================================
-# 8. 运行入口
+# 10. 准确率计算
 # =========================================================
+def accuracy(output, target, topk=(1,)):
+    """
+    计算 top-k 准确率
+    """
+    with torch.no_grad():
+        maxk = min(max(topk), output.size(1))
+        batch_size = target.size(0)
+
+        _, pred = output.topk(maxk, dim=1, largest=True, sorted=True)
+        pred = pred.t()
+        correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+        res = []
+        for k in topk:
+            k = min(k, output.size(1))
+            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+            res.append(correct_k.mul_(100.0 / batch_size))
+        return res
+
+
 if __name__ == "__main__":
-    args = parse_args()
-    main(args)
+    main()

@@ -27,7 +27,7 @@
     "resume_from_checkpoint": "experiments\\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\\checkpoints\\last.pth.tar",
     "resume_epoch": 87,
     "resume_global_step": 27144,
-    "updated_time": "2026-04-11 17:56:56",
+    "updated_time": "2026-04-12 06:26:52",
     "last_runtime_args": {
         "resume_from_checkpoint": "experiments\\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\\checkpoints\\last.pth.tar",
         "run_mode": "train",
@@ -44,10 +44,10 @@
         "use_class_conditioning": true,
         "output_root": "experiments",
         "resolution": 128,
-        "train_batch_size": 16,
-        "eval_batch_size": 16,
+        "train_batch_size": 20,
+        "eval_batch_size": 20,
         "dataloader_num_workers": 4,
-        "num_epochs": 120,
+        "num_epochs": 150,
         "gradient_accumulation_steps": 1,
         "learning_rate": 0.0001,
         "adam_beta1": 0.95,
@@ -88,13 +88,13 @@
         "use_class_conditioning": true
     },
     "training": {
-        "train_batch_size": 16,
-        "eval_batch_size": 16,
-        "num_epochs": 120,
+        "train_batch_size": 20,
+        "eval_batch_size": 20,
+        "num_epochs": 150,
         "learning_rate": 0.0001,
         "gradient_accumulation_steps": 1,
-        "start_epoch": 107,
-        "initial_global_step": 38923
+        "start_epoch": 112,
+        "initial_global_step": 42048
     },
     "paths": {
         "metrics_csv": "experiments\\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\\metrics\\epoch_metrics.csv",
@@ -113,5 +113,6 @@
         "best_train_fid": null,
         "best_model_path": ""
     },
-    "last_epoch_finished": 110
+    "last_epoch_finished": 150,
+    "description": "类别条件扩散模型，time_scale_shift = default。"
 }
