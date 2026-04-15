@@ -1,0 +1,38 @@
+{
+    "epoch": 80,
+    "split": "train",
+    "num_real_images": 1024,
+    "num_fake_images": 1024,
+    "num_images_by_class": {
+        "MEL": "344 (33.59%)",
+        "NV": "0 (0.00%)",
+        "BCC": "159 (15.53%)",
+        "AKIEC": "101 (9.86%)",
+        "BKL": "340 (33.20%)",
+        "DF": "36 (3.52%)",
+        "VASC": "44 (4.30%)"
+    },
+    "num_images_by_class_raw": {
+        "MEL": 344,
+        "NV": 0,
+        "BCC": 159,
+        "AKIEC": 101,
+        "BKL": 340,
+        "DF": 36,
+        "VASC": 44
+    },
+    "fid": 115.11019897460938,
+    "kid_mean": 0.06649990379810333,
+    "kid_std": 0.016017815098166466,
+    "precision": 0.1982421875,
+    "recall": 0.4931640625,
+    "ipr_k": 3,
+    "kid_subsets": 50,
+    "kid_subset_size": 50,
+    "generated_dir": "experiments\\20260415_021917_ddpm_cond_all_all_labels_res128_bs20_seed42\\fid_generated_images\\epoch_080_train_generated",
+    "sampler": "ddim",
+    "num_inference_steps": 100,
+    "ddim_eta": 0.0,
+    "use_class_conditioning": true,
+    "overall_generated_follow_real_distribution": true
+}

@@ -1,0 +1,105 @@
+{
+    "overall": {
+        "accuracy": 77.720207253886,
+        "balanced_multiclass_accuracy": 0.47579075976288526,
+        "macro_recall": 0.47579075976288526,
+        "macro_precision": 0.6044655379020705,
+        "macro_f1": 0.5100443605260165,
+        "multiclass_macro_auc_ovr": 0.9463496991262995,
+        "mean_auc_all_diagnoses": 0.9463496991262995,
+        "mean_average_precision_all_diagnoses": 0.5667954358773292,
+        "mean_sensitivity": 0.47579075976288526,
+        "mean_specificity": 0.9404590581801966,
+        "mean_accuracy": 0.9363434492968172,
+        "mean_f1": 0.5100443605260166,
+        "mean_ppv": 0.6044655379020705,
+        "mean_npv": 0.9536786606990691,
+        "melanoma_auc80": 0.8737541528239203,
+        "malignant_vs_benign_auc": 0.9379194630872483
+    },
+    "per_class": {
+        "MEL": {
+            "sensitivity": 0.5238095238095238,
+            "specificity": 0.9883720930232558,
+            "accuracy": 0.9378238341968912,
+            "auc": 0.9388150609080842,
+            "average_precision": 0.7537585315110518,
+            "f1_score": 0.6470588235294118,
+            "ppv": 0.8461538461538461,
+            "npv": 0.9444444444444444,
+            "auc80": 0.8737541528239203
+        },
+        "NV": {
+            "sensitivity": 0.943089430894309,
+            "specificity": 0.7142857142857143,
+            "accuracy": 0.8601036269430051,
+            "auc": 0.9586527293844367,
+            "average_precision": 0.9795617076284772,
+            "f1_score": 0.8957528957528959,
+            "ppv": 0.8529411764705882,
+            "npv": 0.8771929824561403,
+            "auc80": NaN
+        },
+        "BCC": {
+            "sensitivity": 0.6666666666666666,
+            "specificity": 0.9719101123595506,
+            "accuracy": 0.9481865284974094,
+            "auc": 0.9823970037453184,
+            "average_precision": 0.7408885123591007,
+            "f1_score": 0.6666666666666666,
+            "ppv": 0.6666666666666666,
+            "npv": 0.9719101123595506,
+            "auc80": NaN
+        },
+        "AKIEC": {
+            "sensitivity": 0.5,
+            "specificity": 0.972972972972973,
+            "accuracy": 0.9533678756476683,
+            "auc": 0.8898648648648648,
+            "average_precision": 0.35893415794731587,
+            "f1_score": 0.47058823529411764,
+            "ppv": 0.4444444444444444,
+            "npv": 0.9782608695652174,
+            "auc80": NaN
+        },
+        "BKL": {
+            "sensitivity": 0.36363636363636365,
+            "specificity": 0.935672514619883,
+            "accuracy": 0.8704663212435233,
+            "auc": 0.9191919191919192,
+            "average_precision": 0.47972428699450403,
+            "f1_score": 0.3902439024390244,
+            "ppv": 0.42105263157894735,
+            "npv": 0.9195402298850575,
+            "auc80": NaN
+        },
+        "DF": {
+            "sensitivity": 0.0,
+            "specificity": 1.0,
+            "accuracy": 0.9948186528497409,
+            "auc": 0.9583333333333334,
+            "average_precision": 0.1111111111111111,
+            "f1_score": 0.0,
+            "ppv": 0.0,
+            "npv": 0.9948186528497409,
+            "auc80": NaN
+        },
+        "VASC": {
+            "sensitivity": 0.3333333333333333,
+            "specificity": 1.0,
+            "accuracy": 0.9896373056994818,
+            "auc": 0.9771929824561404,
+            "average_precision": 0.5435897435897437,
+            "f1_score": 0.5,
+            "ppv": 1.0,
+            "npv": 0.9895833333333334,
+            "auc80": NaN
+        }
+    },
+    "malignant_definition_used": [
+        "MEL",
+        "BCC",
+        "AKIEC"
+    ],
+    "val_loss": 0.5927564280175175
+}

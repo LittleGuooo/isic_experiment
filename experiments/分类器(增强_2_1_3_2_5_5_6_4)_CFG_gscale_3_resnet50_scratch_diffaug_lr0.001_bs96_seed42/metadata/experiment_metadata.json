@@ -1,0 +1,121 @@
+{
+    "experiment_name": "20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42",
+    "experiment_dir": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42",
+    "created_time": "2026-04-14 02:16:27",
+    "model_name": "resnet50",
+    "weights": null,
+    "learning_rate": 0.001,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "batch_size": 96,
+    "epochs": 100,
+    "seed": 42,
+    "device": "cuda:0",
+    "data": {
+        "train_gt_csv_path": "dataset/ISIC2018_Task3_Training_GroundTruth.csv",
+        "val_gt_csv_path": "dataset/ISIC2018_Task3_Validation_GroundTruth.csv",
+        "train_img_dir": "dataset/ISIC2018_Task3_Training_Input",
+        "val_img_dir": "dataset/ISIC2018_Task3_Validation_Input",
+        "train_dataset_size": 10015,
+        "val_dataset_size": 193,
+        "synthetic_dataset_size": 2311,
+        "augmented_train_dataset_size": 12326,
+        "split_ratio": "official train / official val",
+        "num_classes": 7,
+        "class_names": [
+            "MEL",
+            "NV",
+            "BCC",
+            "AKIEC",
+            "BKL",
+            "DF",
+            "VASC"
+        ],
+        "class_distribution": {
+            "train_dataset": {
+                "MEL": 1113,
+                "NV": 6705,
+                "BCC": 514,
+                "AKIEC": 327,
+                "BKL": 1099,
+                "DF": 115,
+                "VASC": 142
+            },
+            "val_dataset": {
+                "MEL": 21,
+                "NV": 123,
+                "BCC": 15,
+                "AKIEC": 8,
+                "BKL": 22,
+                "DF": 1,
+                "VASC": 3
+            },
+            "synthetic_dataset": {
+                "MEL": 0,
+                "NV": 0,
+                "BCC": 514,
+                "AKIEC": 654,
+                "BKL": 0,
+                "DF": 575,
+                "VASC": 568
+            },
+            "augmented_train_dataset": {
+                "MEL": 1113,
+                "NV": 6705,
+                "BCC": 1028,
+                "AKIEC": 981,
+                "BKL": 1099,
+                "DF": 690,
+                "VASC": 710
+            }
+        }
+    },
+    "diffusion_augmentation": {
+        "enabled": true,
+        "mode": "cfg",
+        "cfg_scale": 3.0,
+        "cond_drop_prob": 0.1,
+        "use_class_conditioning": true,
+        "use_ddim_sampling": true,
+        "ddim_eta": 0.0,
+        "resolution": 128,
+        "ddpm_num_steps": 1000,
+        "ddpm_num_inference_steps": 100,
+        "ddpm_beta_schedule": "squaredcos_cap_v2",
+        "diffusion_checkpoint": "experiments\\有条件(default)_CFG_ddpm_cond_all_all_labels_res128_bs24_seed42\\checkpoints\\last.pth.tar",
+        "ratios_raw": [
+            "2:1",
+            "3:2",
+            "5:5.0",
+            "6:4.0"
+        ],
+        "active_ratios_by_class_name": {
+            "BCC": 1.0,
+            "AKIEC": 2.0,
+            "DF": 5.0,
+            "VASC": 4.0
+        },
+        "aug_output_dir": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\train_augmented_data"
+    },
+    "paths": {
+        "metrics_csv": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\metrics\\epoch_metrics.csv",
+        "metrics_json": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\metrics\\epoch_metrics.json",
+        "metadata_json": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\metadata\\experiment_metadata.json",
+        "last_checkpoint": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\checkpoints\\last.pth.tar",
+        "best_checkpoint": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\checkpoints\\model_best.pth.tar",
+        "roc_dir": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\roc_curves",
+        "confusion_matrix_dir": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\confusion_matrices",
+        "predictions_dir": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\predictions"
+    },
+    "resume": {
+        "resume_path": null,
+        "start_epoch": 0
+    },
+    "best_result": {
+        "best_epoch": 60,
+        "best_val_balanced_acc": 0.5035446551125994,
+        "best_model_path": "experiments\\20260414_004853_resnet50_scratch_diffaug_lr0.001_bs96_seed42\\checkpoints\\model_best.pth.tar"
+    },
+    "last_epoch_finished": 100,
+    "updated_time": "2026-04-14 03:33:43"
+}

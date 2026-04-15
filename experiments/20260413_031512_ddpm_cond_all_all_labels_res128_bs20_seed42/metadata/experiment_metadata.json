@@ -62,8 +62,8 @@
         "num_epochs": 150,
         "learning_rate": 0.0001,
         "gradient_accumulation_steps": 1,
-        "start_epoch": 68,
-        "initial_global_step": 34000
+        "start_epoch": 122,
+        "initial_global_step": 61000
     },
     "paths": {
         "metrics_csv": "experiments\\20260413_031512_ddpm_cond_all_all_labels_res128_bs20_seed42\\metrics\\epoch_metrics.csv",
@@ -78,13 +78,22 @@
     "best_result": {
         "best_epoch_by_val_fid": -1,
         "best_val_fid": null,
-        "best_epoch_by_train_fid": 20,
-        "best_train_fid": 109.71522521972656,
+        "best_epoch_by_train_fid": 80,
+        "best_train_fid": 96.80792999267578,
         "best_model_path": "experiments\\20260413_031512_ddpm_cond_all_all_labels_res128_bs20_seed42\\checkpoints\\model_best.pth.tar"
     },
-    "last_epoch_finished": 70,
-    "updated_time": "2026-04-13 11:46:18",
+    "last_epoch_finished": 130,
+    "updated_time": "2026-04-14 19:45:09",
     "last_runtime_args": {
+        "cg_diffusion_ckpt_path": null,
+        "classifier_train_epochs": 30,
+        "classifier_train_lr": 0.0001,
+        "classifier_train_batch_size": null,
+        "mode": "ddpm",
+        "cfg_scale": 3.0,
+        "cond_drop_prob": 0.1,
+        "classifier_ckpt_path": null,
+        "classifier_guidance_scale": 1.0,
         "resnet_time_scale_shift": "scale_shift",
         "resume_from_checkpoint": "experiments\\20260413_031512_ddpm_cond_all_all_labels_res128_bs20_seed42\\checkpoints\\last.pth.tar",
         "run_mode": "train",
