@@ -7,6 +7,116 @@ def parse_args():
         description="DDPM / CFG / CG baseline for ISIC2018 dermoscopy images"
     )
 
+    # =========================
+    # ldm 模式相关参数
+    # =========================
+
+    parser.add_argument(
+        "--autoencoder_ckpt_path",
+        type=str,
+        default=None,
+        help="AutoencoderKL 的 checkpoint 路径",
+    )
+    parser.add_argument(
+        "--ae_downsample_factor",
+        type=int,
+        default=8,
+        help="AutoencoderKL 的 downsample factor",
+    )
+    parser.add_argument(
+        "--latent_train_sample_posterior",
+        action="store_true",
+        help="在训练 latent diffusion 时是否从后验分布采样 z",
+    )
+
+    # ===== LDM Autoencoder (KL) =====
+    parser.add_argument(
+        "--ae_latent_channels",
+        type=int,
+        default=4,
+        help="AutoencoderKL 的 latent channels，LDM 常用 4",
+    )
+    parser.add_argument(
+        "--ae_block_out_channels",
+        type=int,
+        nargs="+",
+        default=[64, 128, 256, 512],
+        help="AutoencoderKL 每层通道数，例如 64 128 256 512",
+    )
+    parser.add_argument(
+        "--ae_layers_per_block",
+        type=int,
+        default=2,
+        help="AutoencoderKL 每个 block 的 ResNet 层数",
+    )
+    parser.add_argument(
+        "--ae_norm_num_groups", type=int, default=32, help="GroupNorm 的 group 数"
+    )
+    parser.add_argument(
+        "--ae_mid_block_add_attention",
+        action="store_true",
+        help="是否在 VAE 的 mid block 中加入 attention",
+    )
+    parser.add_argument(
+        "--ae_scaling_factor",
+        type=float,
+        default=0.18215,
+        help="latent scaling factor；diffusers 文档中 AutoencoderKL 默认值为 0.18215",
+    )
+
+    # ===== Loss weights =====
+    parser.add_argument(
+        "--ae_recon_loss_type",
+        type=str,
+        default="l1",
+        choices=["l1", "mse"],
+        help="重建损失类型",
+    )
+    parser.add_argument(
+        "--ae_recon_loss_weight", type=float, default=1.0, help="重建损失权重"
+    )
+    parser.add_argument(
+        "--ae_kl_loss_weight",
+        type=float,
+        default=1e-6,
+        help="KL 损失权重；先给一个适合最小实现的较小默认值",
+    )
+    parser.add_argument(
+        "--ae_patch_loss_weight",
+        type=float,
+        default=0.0,
+        help="patch-based 损失项权重；当前默认关闭，仅预留接口",
+    )
+    parser.add_argument(
+        "--ae_perceptual_loss_weight",
+        type=float,
+        default=0.0,
+        help="感知损失权重；默认 0 表示关闭",
+    )
+    parser.add_argument(
+        "--ae_perceptual_resize",
+        type=int,
+        default=224,
+        help="送入感知网络前的 resize 尺寸",
+    )
+
+    # ===== Sampling / reconstruction behavior =====
+    parser.add_argument(
+        "--ae_sample_posterior",
+        action="store_true",
+        help="训练和可视化时是否从后验分布采样 z；默认 False 时使用 posterior mean/mode，更稳定",
+    )
+    parser.add_argument(
+        "--ae_use_slicing",
+        action="store_true",
+        help="是否启用 AutoencoderKL slicing 以减少显存",
+    )
+    parser.add_argument(
+        "--ae_use_tiling",
+        action="store_true",
+        help="是否启用 AutoencoderKL tiling 以减少高分辨率显存",
+    )
+
     # ----------------------------
     # cg模式相关参数
     # ----------------------------
@@ -71,8 +181,8 @@ def parse_args():
         "--mode",
         type=str,
         default="ddpm",
-        choices=["ddpm", "cfg", "cg"],
-        help="训练/采样模式：ddpm / cfg / cg",
+        choices=["ddpm", "cfg", "cg", "ldm_ae", "latent_ddpm"],
+        help="运行模式",
     )
 
     # UNet / ResNet 中时间嵌入的融合方式
@@ -324,7 +434,7 @@ def parse_args():
     parser.add_argument(
         "--save_images_epochs",
         type=int,
-        default=10,
+        default=20,
         help="每隔多少 epoch 保存一批可视化生成样本",
     )
     parser.add_argument(
@@ -336,7 +446,7 @@ def parse_args():
     parser.add_argument(
         "--eval_epochs",
         type=int,
-        default=10,
+        default=20,
         help="每隔多少 epoch 计算一次 FID 和 Precision/Recall",
     )
     parser.add_argument(
@@ -367,6 +477,26 @@ def parse_args():
 
 
 def validate_args(args):
+
+    # =========================
+    # ldm_ae 模式相关参数检查
+    # =========================
+    if args.mode == "ldm_ae":
+        # 当前只是 AE 预训练，不需要 diffusion 采样相关约束
+        if args.use_class_conditioning:
+            raise ValueError(
+                "ldm_ae 模式下当前不使用类别条件，请关闭 --use_class_conditioning"
+            )
+
+        if args.ae_kl_loss_weight < 0:
+            raise ValueError("--ae_kl_loss_weight 必须 >= 0")
+
+        if args.ae_patch_loss_weight < 0:
+            raise ValueError("--ae_patch_loss_weight 必须 >= 0")
+
+        if args.ae_recon_loss_weight < 0:
+            raise ValueError("--ae_recon_loss_weight 必须 >= 0")
+
     # cg相关的参数检查
     if args.mode == "cg":
         # 只有 val_only / infer_only 才强制要求 classifier checkpoint

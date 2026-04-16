@@ -5,6 +5,7 @@ import torch
 from torch.utils.data import ConcatDataset
 from tqdm.auto import tqdm
 
+
 from .dataset import SavedSyntheticISICDataset
 
 from diffusion.modeling import (
@@ -15,12 +16,14 @@ from diffusion.modeling import (
 from diffusion.modes.ddpm import build_ddpm
 from diffusion.modes.cfg import build_cfg
 from diffusion.modes.cg import build_cg
+from diffusion.modes.ldm import build_latent_ddpm
 
 # 支持的模式工厂
 MODE_FACTORY = {
     "ddpm": build_ddpm,
     "cfg": build_cfg,
     "cg": build_cg,
+    "latent_ddpm": build_latent_ddpm,
 }
 
 
@@ -127,9 +130,7 @@ def _print_augmented_distribution(original_class_counts, synth_dataset, class_na
 
 
 @torch.no_grad()
-def generate_synthetic_images_from_diffusion(
-    args, class_names, num_classes, device, output_dir
-):
+def build_diffusion_model(args, class_names, num_classes, device, output_dir):
     """加载扩散模型并生成图像所需组件"""
     if args.diffusion_checkpoint is None:
         raise ValueError("启用扩散增强时，必须提供 --diffusion_checkpoint。")
@@ -238,14 +239,12 @@ def build_train_dataset(
 
     print("[build_train_dataset] 未复用已有图片，开始生成新的合成图片", flush=True)
 
-    model, sampling_scheduler, mode_ops, extra_components = (
-        generate_synthetic_images_from_diffusion(
-            args=args,
-            class_names=class_names,
-            num_classes=num_classes,
-            device=device,
-            output_dir=output_dir,
-        )
+    model, sampling_scheduler, mode_ops, extra_components = build_diffusion_model(
+        args=args,
+        class_names=class_names,
+        num_classes=num_classes,
+        device=device,
+        output_dir=output_dir,
     )
 
     synth_samples = []

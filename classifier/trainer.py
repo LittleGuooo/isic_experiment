@@ -548,6 +548,7 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
         num_workers=args.workers,
         pin_memory=pin_memory,
         persistent_workers=persistent_workers,
+        prefetch_factor=2 if persistent_workers else 0,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -556,6 +557,7 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
         num_workers=args.workers,
         pin_memory=pin_memory,
         persistent_workers=persistent_workers,
+        prefetch_factor=2 if persistent_workers else 0,
     )
 
     # =========================

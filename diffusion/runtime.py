@@ -1,6 +1,7 @@
 import math
 import os
 import random
+import json
 from datetime import datetime
 
 import numpy as np
@@ -73,6 +74,26 @@ def _clone_dataloader_with_new_batch_size(loader, new_batch_size):
         persistent_workers=loader.persistent_workers,
         pin_memory_device=getattr(loader, "pin_memory_device", ""),
     )
+
+
+def _recover_exp_dir_from_classifier_checkpoint(classifier_ckpt_path):
+    """
+    从 classifier checkpoint 恢复实验目录。
+    优先读 checkpoint 里保存的 exp_dir；
+    如果没有，就按当前项目目录约定，从 checkpoints/ 上推一级。
+    """
+    checkpoint = torch.load(classifier_ckpt_path, map_location="cpu")
+
+    if isinstance(checkpoint, dict):
+        exp_dir = checkpoint.get("exp_dir", None)
+        if isinstance(exp_dir, str) and exp_dir:
+            return exp_dir
+
+    ckpt_dir = os.path.dirname(classifier_ckpt_path)
+    if os.path.basename(ckpt_dir) == "checkpoints":
+        return os.path.dirname(ckpt_dir)
+
+    return ckpt_dir
 
 
 @torch.no_grad()
@@ -324,7 +345,20 @@ def run_train(args):
     # 先固定随机种子
     set_seed(args.seed)
 
-    # 如果指定了 checkpoint，则尝试从旧实验目录恢复
+    # 如果指定了 classifier checkpoint，也从 classifier checkpoint 恢复实验目录
+    classifier_resume_exp_dir = None
+    if (
+        args.mode == "cg"
+        and args.run_mode == "train"
+        and args.cg_diffusion_ckpt_path is not None
+        and args.classifier_ckpt_path is not None
+        and os.path.isfile(args.classifier_ckpt_path)
+    ):
+        classifier_resume_exp_dir = _recover_exp_dir_from_classifier_checkpoint(
+            args.classifier_ckpt_path
+        )
+
+    # 如果指定了 checkpoint，则尝试从旧实验目录恢复，否则创建新实验目录
     if args.resume_from_checkpoint is not None:
         checkpoint = torch.load(args.resume_from_checkpoint, map_location="cpu")
         recovered_exp_dir = recover_exp_dir_from_checkpoint(
@@ -334,6 +368,13 @@ def run_train(args):
         exp_name = os.path.basename(recovered_exp_dir)
         exp_folders = setup_experiment_folders(
             os.path.dirname(recovered_exp_dir),
+            exp_name,
+        )
+    elif classifier_resume_exp_dir is not None:
+        checkpoint = None
+        exp_name = os.path.basename(classifier_resume_exp_dir)
+        exp_folders = setup_experiment_folders(
+            os.path.dirname(classifier_resume_exp_dir),
             exp_name,
         )
     else:
@@ -424,8 +465,69 @@ def run_train(args):
         model = model.to(accelerator.device)
         model.eval()
 
+        # CG 分支保存实验元信息
         if accelerator.is_main_process:
-            modes["train_classifier_only_from_diffusion"](
+            if os.path.exists(metadata_json_path):
+                with open(metadata_json_path, "r", encoding="utf-8") as f:
+                    experiment_metadata = json.load(f)
+            else:
+                experiment_metadata = {
+                    "experiment_name": exp_name,
+                    "experiment_dir": exp_folders["exp_dir"],
+                    "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+
+            experiment_metadata.update(
+                {
+                    "run_mode": args.run_mode,
+                    "mode": args.mode,
+                    "resume_from_checkpoint": args.resume_from_checkpoint,
+                    "cg_diffusion_ckpt_path": args.cg_diffusion_ckpt_path,
+                    "classifier_resume_path": args.classifier_ckpt_path,
+                    "data": {
+                        "train_gt_csv_path": args.train_gt_csv_path,
+                        "val_gt_csv_path": args.val_gt_csv_path,
+                        "train_img_dir": args.train_img_dir,
+                        "val_img_dir": args.val_img_dir,
+                        "data_mode": args.data_mode,
+                        "target_label": args.target_label,
+                        "use_class_conditioning": args.use_class_conditioning,
+                        "num_classes": num_classes,
+                        "class_names": class_names,
+                        "train_dataset_size": len(train_dataset),
+                        "val_dataset_size": len(val_dataset),
+                        "class_distribution": {
+                            "train_dataset": format_count_ratio_dict(
+                                train_class_distribution
+                            ),
+                            "val_dataset": format_count_ratio_dict(
+                                val_class_distribution
+                            ),
+                        },
+                    },
+                    "training": {
+                        "classifier_train_epochs": args.classifier_train_epochs,
+                        "classifier_train_lr": args.classifier_train_lr,
+                        "classifier_train_batch_size": args.classifier_train_batch_size,
+                    },
+                    "paths": {
+                        "metrics_csv": metrics_csv_path,
+                        "metrics_json": metrics_json_path,
+                        "metadata_json": metadata_json_path,
+                        "checkpoints_dir": exp_folders["checkpoints_dir"],
+                        "samples_dir": exp_folders["samples_dir"],
+                        "fid_dir": exp_folders["fid_dir"],
+                        "fid_generated_dir": exp_folders["fid_generated_dir"],
+                    },
+                    "classifier_training": {
+                        "status": "running",
+                    },
+                    "updated_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+            save_json(experiment_metadata, metadata_json_path)
+
+            classifier_train_result = modes["train_classifier_only_from_diffusion"](
                 unet=model,
                 noise_scheduler=noise_scheduler,
                 train_dataloader=classifier_train_dataloader,
@@ -434,6 +536,22 @@ def run_train(args):
                 device=accelerator.device,
                 exp_folders=exp_folders,
             )
+
+            experiment_metadata["classifier_training"] = {
+                "status": "finished",
+                "resume_path": args.classifier_ckpt_path,
+                "history_json_path": classifier_train_result["history_json_path"],
+                "best_classifier_ckpt_path": classifier_train_result[
+                    "best_classifier_ckpt_path"
+                ],
+                "best_val_balanced_accuracy": classifier_train_result[
+                    "best_val_balanced_accuracy"
+                ],
+            }
+            experiment_metadata["updated_time"] = datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            save_json(experiment_metadata, metadata_json_path)
 
         accelerator.wait_for_everyone()
         accelerator.end_training()
@@ -651,6 +769,29 @@ def run_train(args):
                 "use_ddim_sampling": args.use_ddim_sampling,
                 "ddim_eta": args.ddim_eta,
                 "use_class_conditioning": args.use_class_conditioning,
+                # ldm_ae 相关元信息
+                "autoencoder": {
+                    "ae_latent_channels": getattr(args, "ae_latent_channels", None),
+                    "ae_block_out_channels": getattr(
+                        args, "ae_block_out_channels", None
+                    ),
+                    "ae_layers_per_block": getattr(args, "ae_layers_per_block", None),
+                    "ae_norm_num_groups": getattr(args, "ae_norm_num_groups", None),
+                    "ae_mid_block_add_attention": getattr(
+                        args, "ae_mid_block_add_attention", None
+                    ),
+                    "ae_scaling_factor": getattr(args, "ae_scaling_factor", None),
+                    "ae_recon_loss_type": getattr(args, "ae_recon_loss_type", None),
+                    "ae_recon_loss_weight": getattr(args, "ae_recon_loss_weight", None),
+                    "ae_kl_loss_weight": getattr(args, "ae_kl_loss_weight", None),
+                    "ae_patch_loss_weight": getattr(args, "ae_patch_loss_weight", None),
+                    "ae_perceptual_loss_weight": getattr(
+                        args, "ae_perceptual_loss_weight", None
+                    ),
+                    "ae_sample_posterior": getattr(args, "ae_sample_posterior", None),
+                    "ae_use_slicing": getattr(args, "ae_use_slicing", None),
+                    "ae_use_tiling": getattr(args, "ae_use_tiling", None),
+                },
             },
             "mode": {
                 "mode": args.mode,
@@ -782,9 +923,11 @@ def run_train(args):
         train_per_class_generated_dir = val_per_class_generated_dir = ""
         sample_dir = ""
         diffusers_model_index_copy_path = ""
+        ae_model_dir = ""
 
         # 只在主进程执行“保存文件 / 跑评估 / 写日志”
         if accelerator.is_main_process:
+            # unwrap_model(...) 用于获取被 accelerator 封装后的原始模型，便于访问其属性和方法
             unet = accelerator.unwrap_model(model)
 
             # 保存 / 评估时临时切到 EMA 权重；结束后再恢复训练权重
@@ -794,14 +937,16 @@ def run_train(args):
                 ema_model.copy_to(unet.parameters())
                 ema_applied = True
 
-            # 构建一个可保存的 diffusers pipeline
-            # 后面会用 pipeline.save_pretrained(...) 保存到实验目录
-            pipeline = build_save_pipeline(
-                unet,
-                noise_scheduler,
-                args.use_ddim_sampling,
-            )
-            pipeline = pipeline.to(accelerator.device)
+            # 对 diffusion 模式，构建可保存的 diffusers pipeline
+            # 对 ldm_ae 模式，不构建 pipeline，后面直接保存 AutoencoderKL
+            pipeline = None
+            if args.mode != "ldm_ae":
+                pipeline = build_save_pipeline(
+                    unet,
+                    noise_scheduler,
+                    args.use_ddim_sampling,
+                )
+                pipeline = pipeline.to(accelerator.device)
 
             # ---------------------------
             # 1. 保存当前 epoch 的样图
@@ -814,88 +959,112 @@ def run_train(args):
                 )
                 os.makedirs(epoch_dir, exist_ok=True)
 
-                # 按训练集真实类别分布，给每个类别分配要生成多少张样图
-                # 这样保存出来的可视化样本在类别比例上更接近真实数据
-                sample_alloc = allocate_samples_by_ratio(
-                    train_class_distribution,
-                    args.eval_batch_size,
-                )
+                # -------------------------------------------------
+                # ldm_ae：保存“重建图”，不是从噪声采样的生成图
+                # -------------------------------------------------
+                if args.mode == "ldm_ae":
+                    # 直接复用当前 epoch 训练循环结束后作用域里的最后一个 batch
+                    # 只取前 eval_batch_size 张，避免一次保存太多
+                    source_batch = {
+                        "input": batch["input"][: args.eval_batch_size],
+                        "label": batch["label"][: args.eval_batch_size],
+                        "sample_id": batch["sample_id"][: args.eval_batch_size],
+                    }
 
-                # 为采样构建 scheduler
-                # 可能是 DDPM scheduler，也可能是 DDIM scheduler
-                sampling_scheduler = build_sampling_scheduler(
-                    noise_scheduler,
-                    args.use_ddim_sampling,
-                )
-
-                # 用来给保存出的样图编号
-                sample_counter = 0
-
-                # 逐类别生成样图
-                for class_idx, class_name in enumerate(class_names):
-                    # 当前类别需要生成的样图数量
-                    cur_n = sample_alloc[class_name]
-
-                    # 如果这个类别本轮不需要生成，就跳过
-                    if cur_n <= 0:
-                        continue
-
-                    # 为当前类别构造一个固定随机种子
-                    # 这样同一个 epoch 内不同类别的采样是可复现的
-                    generator = torch.Generator(device=accelerator.device).manual_seed(
-                        class_idx
-                    )
-
-                    # 如果启用了 class conditioning，就给当前批次构造类别标签
-                    # 否则 class_labels=None，表示 unconditional sampling
-                    class_labels = (
-                        torch.full(
-                            (cur_n,),
-                            fill_value=class_idx,
-                            device=accelerator.device,
-                            dtype=torch.long,
-                        )
-                        if args.use_class_conditioning
-                        else None
-                    )
-
-                    # 调用当前模式（DDPM / CFG / CG）对应的采样函数生成图片
-                    # 这里返回的是适合保存的 uint8 图像张量
                     samples_uint8 = modes["sample_images"](
                         model=unet,
-                        sampling_scheduler=sampling_scheduler,
+                        sampling_scheduler=None,
                         device=accelerator.device,
                         resolution=args.resolution,
-                        batch_size=cur_n,
-                        num_inference_steps=args.ddpm_num_inference_steps,
-                        generator=generator,
-                        class_labels=class_labels,
+                        batch_size=source_batch["input"].size(0),
+                        num_inference_steps=0,
+                        generator=None,
+                        class_labels=None,
                         extra_components=extra_components,
                         return_pil_safe_uint8=True,
+                        source_batch=source_batch,  # 关键：把真实图传进去做 reconstruction
                     )
 
-                    # 把生成结果逐张保存到磁盘
                     for i in range(samples_uint8.size(0)):
                         pil_img = uint8_tensor_to_pil(samples_uint8[i])
 
-                        # conditional 模式下文件名会带上类别名，便于查看
-                        file_name = (
-                            f"sample_{sample_counter:03d}_{class_name}.png"
+                        # 文件名里保留原 sample_id，便于对照
+                        sample_id = source_batch["sample_id"][i]
+                        file_name = f"recon_{i:03d}_{sample_id}.png"
+                        pil_img.save(os.path.join(epoch_dir, file_name))
+
+                    sample_dir = epoch_dir
+
+                # -------------------------------------------------
+                # diffusion 模式：保持你原来的采样生成逻辑不变
+                # -------------------------------------------------
+                else:
+                    # 按训练集真实类别分布，给每个类别分配要生成多少张样图
+                    sample_alloc = allocate_samples_by_ratio(
+                        train_class_distribution,
+                        args.eval_batch_size,
+                    )
+
+                    # 为采样构建 scheduler
+                    sampling_scheduler = build_sampling_scheduler(
+                        noise_scheduler,
+                        args.use_ddim_sampling,
+                    )
+
+                    sample_counter = 0
+
+                    for class_idx, class_name in enumerate(class_names):
+                        cur_n = sample_alloc[class_name]
+                        if cur_n <= 0:
+                            continue
+
+                        generator = torch.Generator(
+                            device=accelerator.device
+                        ).manual_seed(class_idx)
+
+                        class_labels = (
+                            torch.full(
+                                (cur_n,),
+                                fill_value=class_idx,
+                                device=accelerator.device,
+                                dtype=torch.long,
+                            )
                             if args.use_class_conditioning
-                            else f"sample_{sample_counter:03d}.png"
+                            else None
                         )
 
-                        pil_img.save(os.path.join(epoch_dir, file_name))
-                        sample_counter += 1
+                        samples_uint8 = modes["sample_images"](
+                            model=unet,
+                            sampling_scheduler=sampling_scheduler,
+                            device=accelerator.device,
+                            resolution=args.resolution,
+                            batch_size=cur_n,
+                            num_inference_steps=args.ddpm_num_inference_steps,
+                            generator=generator,
+                            class_labels=class_labels,
+                            extra_components=extra_components,
+                            return_pil_safe_uint8=True,
+                        )
 
-                # 记录本轮样图目录，后面写入 metrics / metadata
-                sample_dir = epoch_dir
+                        for i in range(samples_uint8.size(0)):
+                            pil_img = uint8_tensor_to_pil(samples_uint8[i])
+
+                            file_name = (
+                                f"sample_{sample_counter:03d}_{class_name}.png"
+                                if args.use_class_conditioning
+                                else f"sample_{sample_counter:03d}.png"
+                            )
+
+                            pil_img.save(os.path.join(epoch_dir, file_name))
+                            sample_counter += 1
+
+                    sample_dir = epoch_dir
 
             # ---------------------------
             # 2. 执行当前 epoch 的评估
             # ---------------------------
             if need_eval:
-                # 如果启用了 train split 评估，就计算 train 的整体指标和可选逐类指标
+                # 如果启用了 train 评估，就计算 train 的整体指标和可选逐类指标
                 if enable_train_fid:
                     train_eval_result = (
                         evaluate_split_with_overall_and_per_class_metrics(
@@ -943,7 +1112,7 @@ def run_train(args):
                         "per_class_generated_dir"
                     ]
 
-                # 如果启用了 val split 评估，就计算 val 的整体指标
+                # 如果启用了 val 评估，就计算 val 的整体指标
                 if enable_val_fid:
                     val_eval_result = evaluate_split_with_overall_and_per_class_metrics(
                         split_name="val",
@@ -1055,14 +1224,22 @@ def run_train(args):
                         "best_model_path"
                     ] = best_model_path
 
-                # 同时把 diffusers pipeline 形式的模型也保存到实验目录
-                pipeline.save_pretrained(exp_folders["exp_dir"])
+                # diffusion 模式：保存 pipeline
+                # ldm_ae 模式：直接保存 AutoencoderKL
+                if args.mode == "ldm_ae":
+                    ae_model_dir = os.path.join(exp_folders["exp_dir"], "autoencoder")
+                    os.makedirs(ae_model_dir, exist_ok=True)
+                    unet.save_pretrained(ae_model_dir)
 
-                # 并把 model_index.json 再复制一份到 metadata 目录中
-                diffusers_model_index_copy_path = save_diffusers_model_index_copy(
-                    exp_folders["exp_dir"],
-                    exp_folders["metadata_dir"],
-                )
+                    # ldm_ae 没有 diffusion pipeline 的 model_index.json
+                    diffusers_model_index_copy_path = ""
+                else:
+                    pipeline.save_pretrained(exp_folders["exp_dir"])
+
+                    diffusers_model_index_copy_path = save_diffusers_model_index_copy(
+                        exp_folders["exp_dir"],
+                        exp_folders["metadata_dir"],
+                    )
 
             # ---------------------------
             # 6. 如果当前 epoch 做了评估，再额外留一个“按 epoch 命名”的 checkpoint
@@ -1079,14 +1256,22 @@ def run_train(args):
                     filename=eval_ckpt_name,
                 )
 
-                # 保存 pipeline
+            # diffusion 模式：保存 pipeline
+            # ldm_ae 模式：直接保存 AutoencoderKL
+            if args.mode == "ldm_ae":
+                ae_model_dir = os.path.join(exp_folders["exp_dir"], "autoencoder")
+                os.makedirs(ae_model_dir, exist_ok=True)
+                unet.save_pretrained(ae_model_dir)
+
+                diffusers_model_index_copy_path = ""
+            else:
                 pipeline.save_pretrained(exp_folders["exp_dir"])
 
-                # 保存一份 model_index.json 到 metadata 目录
                 diffusers_model_index_copy_path = save_diffusers_model_index_copy(
                     exp_folders["exp_dir"],
                     exp_folders["metadata_dir"],
                 )
+
             if ema_applied:
                 ema_model.restore(unet.parameters())
 

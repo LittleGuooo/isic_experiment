@@ -198,7 +198,9 @@ def build_datasets_and_loaders(args):
         shuffle=True,
         num_workers=args.dataloader_num_workers,
         pin_memory=pin_memory,
+        prefetch_factor=2,
         drop_last=True,
+        persistent_workers=args.dataloader_num_workers > 0,
     )
 
     # train_eval_loader：用于在训练集上做评估
@@ -207,8 +209,10 @@ def build_datasets_and_loaders(args):
         batch_size=args.eval_batch_size,
         shuffle=True,
         num_workers=args.dataloader_num_workers,
+        prefetch_factor=2,
         pin_memory=pin_memory,
         drop_last=False,
+        persistent_workers=args.dataloader_num_workers > 0,
     )
 
     # val_eval_loader：验证集评估不需要打乱顺序
@@ -217,8 +221,10 @@ def build_datasets_and_loaders(args):
         batch_size=args.eval_batch_size,
         shuffle=False,
         num_workers=args.dataloader_num_workers,
+        prefetch_factor=2,
         pin_memory=pin_memory,
         drop_last=False,
+        persistent_workers=args.dataloader_num_workers > 0,
     )
 
     # 统一打包返回，减少主流程里的局部变量数量

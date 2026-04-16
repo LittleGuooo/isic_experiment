@@ -1,0 +1,113 @@
+{
+    "experiment_name": "20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42",
+    "experiment_dir": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42",
+    "created_time": "2026-04-16 11:21:28",
+    "model_name": "resnet101",
+    "weights": null,
+    "learning_rate": 0.001,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "batch_size": 128,
+    "epochs": 100,
+    "seed": 42,
+    "device": "cuda:0",
+    "data": {
+        "train_gt_csv_path": "dataset/ISIC2018_Task3_Training_GroundTruth.csv",
+        "val_gt_csv_path": "dataset/ISIC2018_Task3_Validation_GroundTruth.csv",
+        "train_img_dir": "dataset/ISIC2018_Task3_Training_Input",
+        "val_img_dir": "dataset/ISIC2018_Task3_Validation_Input",
+        "train_dataset_size": 10015,
+        "val_dataset_size": 193,
+        "synthetic_dataset_size": 0,
+        "augmented_train_dataset_size": 10015,
+        "split_ratio": "official train / official val",
+        "num_classes": 7,
+        "class_names": [
+            "MEL",
+            "NV",
+            "BCC",
+            "AKIEC",
+            "BKL",
+            "DF",
+            "VASC"
+        ],
+        "class_distribution": {
+            "train_dataset": {
+                "MEL": "1113 (11.11%)",
+                "NV": "6705 (66.95%)",
+                "BCC": "514 (5.13%)",
+                "AKIEC": "327 (3.27%)",
+                "BKL": "1099 (10.97%)",
+                "DF": "115 (1.15%)",
+                "VASC": "142 (1.42%)",
+                "Total": "10015 (100.00%)"
+            },
+            "val_dataset": {
+                "MEL": "21 (10.88%)",
+                "NV": "123 (63.73%)",
+                "BCC": "15 (7.77%)",
+                "AKIEC": "8 (4.15%)",
+                "BKL": "22 (11.40%)",
+                "DF": "1 (0.52%)",
+                "VASC": "3 (1.55%)",
+                "Total": "193 (100.00%)"
+            },
+            "synthetic_dataset": null,
+            "augmented_train_dataset": {
+                "MEL": "1113 (11.11%)",
+                "NV": "6705 (66.95%)",
+                "BCC": "514 (5.13%)",
+                "AKIEC": "327 (3.27%)",
+                "BKL": "1099 (10.97%)",
+                "DF": "115 (1.15%)",
+                "VASC": "142 (1.42%)",
+                "Total": "10015 (100.00%)"
+            }
+        }
+    },
+    "diffusion_augmentation": {
+        "enabled": false,
+        "mode": "ddpm",
+        "use_class_conditioning": false,
+        "use_ddim_sampling": false,
+        "ddim_eta": 0.0,
+        "resolution": 128,
+        "ddpm_num_steps": 1000,
+        "ddpm_num_inference_steps": 100,
+        "ddpm_beta_schedule": "squaredcos_cap_v2",
+        "diffusion_checkpoint": null,
+        "ratios_raw": null,
+        "active_ratios_by_class_name": {},
+        "aug_output_dir": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\train_augmented_data",
+        "mode_specific_params": {}
+    },
+    "paths": {
+        "metrics_csv": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\metrics\\epoch_metrics.csv",
+        "metrics_json": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\metrics\\epoch_metrics.json",
+        "metadata_json": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\metadata\\experiment_metadata.json",
+        "last_checkpoint": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\checkpoints\\last.pth.tar",
+        "best_checkpoint": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\checkpoints\\model_best.pth.tar",
+        "roc_dir": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\roc_curves",
+        "confusion_matrix_dir": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\confusion_matrices",
+        "predictions_dir": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\predictions"
+    },
+    "resume": {
+        "resume_path": null,
+        "start_epoch": 0
+    },
+    "early_stopping": {
+        "patience": 0,
+        "min_delta": 0.0,
+        "monitor": "val_balanced_acc",
+        "mode": "max",
+        "counter": 1,
+        "stopped_early": false
+    },
+    "best_result": {
+        "best_epoch": 40,
+        "best_val_balanced_acc": 0.41094091738691046,
+        "best_model_path": "experiments\\20260416_112128_resnet101_scratch_noaug_lr0.001_bs128_seed42\\checkpoints\\model_best.pth.tar"
+    },
+    "last_epoch_finished": 45,
+    "updated_time": "2026-04-16 11:49:11"
+}

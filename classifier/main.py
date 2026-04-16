@@ -27,6 +27,116 @@ def parse_args():
     )
 
     # =========================
+    # ldm 模式相关参数
+    # =========================
+
+    parser.add_argument(
+        "--autoencoder_ckpt_path",
+        type=str,
+        default=None,
+        help="AutoencoderKL 的 checkpoint 路径",
+    )
+    parser.add_argument(
+        "--ae_downsample_factor",
+        type=int,
+        default=8,
+        help="AutoencoderKL 的 downsample factor",
+    )
+    parser.add_argument(
+        "--latent_train_sample_posterior",
+        action="store_true",
+        help="在训练 latent diffusion 时是否从后验分布采样 z",
+    )
+
+    # ===== LDM Autoencoder (KL) =====
+    parser.add_argument(
+        "--ae_latent_channels",
+        type=int,
+        default=4,
+        help="AutoencoderKL 的 latent channels，LDM 常用 4",
+    )
+    parser.add_argument(
+        "--ae_block_out_channels",
+        type=int,
+        nargs="+",
+        default=[64, 128, 256, 512],
+        help="AutoencoderKL 每层通道数，例如 64 128 256 512",
+    )
+    parser.add_argument(
+        "--ae_layers_per_block",
+        type=int,
+        default=2,
+        help="AutoencoderKL 每个 block 的 ResNet 层数",
+    )
+    parser.add_argument(
+        "--ae_norm_num_groups", type=int, default=32, help="GroupNorm 的 group 数"
+    )
+    parser.add_argument(
+        "--ae_mid_block_add_attention",
+        action="store_true",
+        help="是否在 VAE 的 mid block 中加入 attention",
+    )
+    parser.add_argument(
+        "--ae_scaling_factor",
+        type=float,
+        default=0.18215,
+        help="latent scaling factor；diffusers 文档中 AutoencoderKL 默认值为 0.18215",
+    )
+
+    # ===== Loss weights =====
+    parser.add_argument(
+        "--ae_recon_loss_type",
+        type=str,
+        default="l1",
+        choices=["l1", "mse"],
+        help="重建损失类型",
+    )
+    parser.add_argument(
+        "--ae_recon_loss_weight", type=float, default=1.0, help="重建损失权重"
+    )
+    parser.add_argument(
+        "--ae_kl_loss_weight",
+        type=float,
+        default=1e-6,
+        help="KL 损失权重；先给一个适合最小实现的较小默认值",
+    )
+    parser.add_argument(
+        "--ae_patch_loss_weight",
+        type=float,
+        default=0.0,
+        help="patch-based 损失项权重；当前默认关闭，仅预留接口",
+    )
+    parser.add_argument(
+        "--ae_perceptual_loss_weight",
+        type=float,
+        default=0.0,
+        help="感知损失权重；默认 0 表示关闭",
+    )
+    parser.add_argument(
+        "--ae_perceptual_resize",
+        type=int,
+        default=224,
+        help="送入感知网络前的 resize 尺寸",
+    )
+
+    # ===== Sampling / reconstruction behavior =====
+    parser.add_argument(
+        "--ae_sample_posterior",
+        action="store_true",
+        help="训练和可视化时是否从后验分布采样 z；默认 False 时使用 posterior mean/mode，更稳定",
+    )
+    parser.add_argument(
+        "--ae_use_slicing",
+        action="store_true",
+        help="是否启用 AutoencoderKL slicing 以减少显存",
+    )
+    parser.add_argument(
+        "--ae_use_tiling",
+        action="store_true",
+        help="是否启用 AutoencoderKL tiling 以减少高分辨率显存",
+    )
+
+    # =========================
     # 基础训练参数
     # =========================
     parser.add_argument("--arch", default="resnet50", choices=model_names)
@@ -92,9 +202,10 @@ def parse_args():
 
     # =========================
     # 扩散模型相关参数
-    # 这些参数会传递给 augmentation.py 和对应的扩散采样逻辑
     # =========================
-    parser.add_argument("--mode", default="ddpm", choices=["ddpm", "cfg", "cg"])
+    parser.add_argument(
+        "--mode", default="ddpm", choices=["ddpm", "cfg", "cg", "latent_ddpm"]
+    )
     parser.add_argument("--use_class_conditioning", action="store_true")
     parser.add_argument("--use_ddim_sampling", action="store_true")
     parser.add_argument("--ddim_eta", type=float, default=0.0)
@@ -161,8 +272,6 @@ def main():
     print(f"Using device: {device}")
 
     # 分类器输入预处理
-    # 这里使用的是 ImageNet 常见的均值和标准差，
-    # 因为 torchvision 的很多预训练模型默认按这个分布训练
     classifier_transforms = transforms.Compose(
         [
             transforms.Resize((224, 224)),  # 把图片统一缩放到 224x224

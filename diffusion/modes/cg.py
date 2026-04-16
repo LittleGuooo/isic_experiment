@@ -455,6 +455,7 @@ def train_guidance_classifier(
                 max(best_val_bal_acc, val_result["balanced_accuracy"])
             ),
             "history": history,
+            "exp_dir": exp_folders["exp_dir"] if exp_folders is not None else None,
         }
 
         if last_ckpt_path is not None:
@@ -561,6 +562,7 @@ def _save_classifier_training_outputs(exp_folders, train_result):
             "classifier_state_dict": train_result["best_classifier_state_dict"],
             "history": train_result["history"],
             "best_val_balanced_accuracy": train_result["best_val_balanced_accuracy"],
+            "exp_dir": exp_folders["exp_dir"],
         },
         best_ckpt_path,
     )
@@ -580,14 +582,17 @@ def build_cg(args):
 
         # 训练阶段如果没有 classifier checkpoint，
         # 说明当前先训练 diffusion，classifier 之后再训。
-        # 这里先允许通过，不阻塞 diffusion 主训练流程。
-        if args.run_mode == "train" and args.classifier_ckpt_path is None:
+        run_mode = getattr(args, "run_mode", None)
+
+        # 只有在“明确是 diffusion 训练阶段”且还没有 classifier checkpoint 时，
+        # 才允许先跳过 classifier，退化成普通 class-conditional diffusion
+        if run_mode == "train" and args.classifier_ckpt_path is None:
             return {
                 "classifier": None,
                 "cg_adapter": None,
             }
 
-        # val_only / infer_only / 以及已提供 classifier ckpt 的情况
+        # 其它场景（包括 classifier.main 调用的增强采样）都要求提供 classifier ckpt
         if args.classifier_ckpt_path is None:
             raise ValueError("CG mode requires --classifier_ckpt_path.")
 

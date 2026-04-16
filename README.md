@@ -6,52 +6,40 @@
 - `datasets/`：用于存放原始数据集或处理后的数据集副本。
 - `test.Ipynb`、`day1.py` 等：你的代码和实验脚本。
 
-# 执行代码
-python classifier.py --epochs 50
 
-python diffusion.py --run_mode train --use_class_conditioning --num_epochs 150 --use_ddim_sampling --resolution 128 --num_fid_samples_train 1024 --ddpm_num_inference_steps 100 --train_batch_size 20 --eval_batch_size 20 --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar
+# 训练扩散模型
+python -m diffusion.main --run_mode train --mode cfg --resolution 224 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 1024 --use_class_conditioning --resnet_time_scale_shift scale_shift --exclude_train_nv --cfg_scale 0.3 --cond_drop_prob 0.15 --use_ema --num_epochs 120 --train_batch_size 20 --eval_batch_size 20 --resume_from_checkpoint experiments\20260415_021917_ddpm_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --eval_epochs 40
 
-python diffusion.py --run_mode val_only --use_class_conditioning --use_ddim_sampling --resolution 128 --num_fid_samples_train 1024 --ddpm_num_inference_steps 100 --train_batch_size 20 --eval_batch_size 20 --resume_from_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar
+## 训练ldm
+python -m diffusion.main --run_mode train --mode latent_ddpm --resolution 256 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 1024 --num_fid_samples_val 193 --use_class_conditioning --resnet_time_scale_shift scale_shift --exclude_train_nv --use_ema --num_epochs 120 --train_batch_size 64 --eval_batch_size 32 --autoencoder_ckpt_path experiments\ldmae_exluNV_labels_res256_bs8_seed42\autoencoder --resume_from_checkpoint experiments\20260416_165303_ddpm_cond_all_all_labels_res256_bs64_seed42\checkpoints\last.pth.tar
 
-python CFG_diffusion.py --run_mode train --use_class_conditioning --num_epochs 120 --use_ddim_sampling --resolution 128  --num_fid_samples_train 1024 --ddpm_num_inference_steps 100 --train_batch_size 20 --eval_batch_size 20 --resume_from_checkpoint experiments\20260409_182550_ddpm_cond_all_all_labels_res128_bs24_seed42\checkpoints\last.pth.tar
+# 训练cg
+python -m diffusion.main --run_mode train --mode cg --cg_diffusion_ckpt_path experiments\有条件(scale_shift)_ddpm_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --classifier_train_epochs 80 --classifier_train_batch_size 128 --resolution 128 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 1024 --use_class_conditioning --resnet_time_scale_shift scale_shift --use_ema --classifier_ckpt_path experiments\20260416_120535_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\classifier_last.pth.tar
 
-python classifier_augment.py --epochs 100 --diffusion_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --ratios 5:1.0 6:1.0 --diffusion_module diffusion --num_classes 7 --time_scale_shift default --scheduler_config experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\scheduler\scheduler_config.json --gen_batch_size 64 --train_batch_size 96 --eval-freq 5 --save-every-eval --resume experiments\20260412_200106_resnet50_scratch_lr0.001_bs32_seed42\checkpoints\last.pth.tar
 
-python classifier_augment.py --epochs 100 --diffusion_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --ratios 3:1.0 5:2.0 6:2.0 --diffusion_module diffusion --num_classes 7 --time_scale_shift default --scheduler_config experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\scheduler\scheduler_config.json --gen_batch_size 64 --train_batch_size 96 --eval-freq 5 --save-every-eval --resume experiments\20260412_224539_resnet50_scratch_lr0.001_bs96_seed42\checkpoints\last.pth.tar
+# 训练分类器
+python -m classifier.main --epochs 100 --batch-size 128 --eval-freq 5 --save-every-eval --use-amp --arch resnet101
 
-python classifier_augment.py --epochs 100 --diffusion_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --ratios 3:1.0 5:1.0 6:1.0 --diffusion_module diffusion --num_classes 7 --time_scale_shift default --scheduler_config experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\scheduler\scheduler_config.json --gen_batch_size 64 --train_batch_size 96 --eval-freq 5 --save-every-eval --resume experiments\20260413_000833_resnet50_scratch_lr0.001_bs96_seed42\checkpoints\last.pth.tar
+## cg分类器
+python -m classifier.main --epochs 100 --diffusion_checkpoint experiments\有条件(scale_shift)_ddpm_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --ratios 2:1 3:1 5:5.0 6:4.0 --resnet_time_scale_shift scale_shift --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --use_ddim_sampling --use_class_conditioning --resolution 128 --mode cg --ddpm_num_inference_steps 100 --ddpm_num_steps 1000 --use-amp --classifier_guidance_scale 10 --classifier_ckpt_path experiments\20260416_120910_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\classifier_last.pth.tar --classifier_guidance_scale 10
 
-python classifier_augment.py --epochs 100 --diffusion_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --ratios 5:2.0 6:2.0 --diffusion_module diffusion --num_classes 7 --time_scale_shift default --scheduler_config experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\scheduler\scheduler_config.json --gen_batch_size 64 --train_batch_size 96 --eval-freq 5 --save-every-eval --resume experiments\20260413_012012_resnet50_scratch_lr0.001_bs96_seed42\checkpoints\last.pth.tar
+## ldm分类器
+python -m classifier.main --mode latent_ddpm --resolution 256 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --use_class_conditioning --resnet_time_scale_shift scale_shift --epochs 100 --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --autoencoder_ckpt_path experiments\ldmae_exluNV_labels_res256_bs8_seed42\autoencoder --diffusion_checkpoint experiments\20260416_165303_ddpm_cond_all_all_labels_res256_bs64_seed42\checkpoints\last.pth.tar --ratios 2:1 3:1 5:5.0 6:4.0
 
+## experiments\20260415_225814_resnet50_scratch_diffaug_lr0.001_bs128_seed42
+python -m classifier.main --epochs 100 --diffusion_checkpoint experiments\有条件(scale)_CFG_eculNV_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --ratios 2:1 3:1 5:5.0 6:4.0 --resnet_time_scale_shift scale_shift --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --use_ddim_sampling --use_class_conditioning --resolution 128 --mode cfg --cfg_scale 0.3 --cond_drop_prob 0.15 --ddpm_num_inference_steps 100 --ddpm_num_steps 1000 --use-amp --resume experiments\20260415_225814_resnet50_scratch_diffaug_lr0.001_bs128_seed42\checkpoints\last.pth.tar
+
+'''
     #   0=MEL(Melanoma), 1=NV(Melanocytic nevus), 2=BCC(Basal cell carcinoma)
     #   3=AKIEC(Actinic keratosis/Bowen's disease), 4=BKL(Benign keratosis)
     #   5=DF(Dermatofibroma), 6=VASC(Vascular lesion)
+'''
 
-python CG_diffusion.py --diffusion_checkpoint "experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar" --resolution 128 --num_classes 7 --ddpm_num_steps 1000 --ddpm_beta_schedule squaredcos_cap_v2 --num_inference_steps 100 --guidance_scale 3 --ddim_eta 0.0 --classifier_epochs 120 --classifier_lr 1e-4 --batch_size 96 --workers 4 --classifier_feat_size 4 --classifier_num_heads 8 --num_generate_total 2048 --guided_gen_batch_size 32 --use_class_conditioning --resume experiments\20260413_025550_ResNet50_scratch_lr0.0001_bs96_seed42\checkpoints\classifier_last.pth.tar
-
-python diffusion.py --run_mode train --use_class_conditioning --num_epochs 150 --use_ddim_sampling --resolution 128 --num_fid_samples_train 1024 --ddpm_num_inference_steps 100 --train_batch_size 20 --eval_batch_size 20 --resnet_time_scale_shift scale_shift
-
-
-python classifier_augment.py --epochs 100 --diffusion_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --ratios 2:1 3:1 5:4.0 6:4.0 --diffusion_module diffusion --num_classes 7 --time_scale_shift default --scheduler_config experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\scheduler\scheduler_config.json --gen_batch_size 64 --train_batch_size 96 --eval-freq 5 --save-every-eval 
+# 训练autoencoder
+python -m diffusion.main --run_mode train --mode ldm_ae --ae_mid_block_add_attention --ae_perceptual_loss_weight 0.2 --resolution 256 --ddpm_num_steps 1000 --exclude_train_nv --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 0 --use_ema --train_batch_size 8 --eval_epochs 10 --save_images_epochs 10 --num_epochs 50 --resume experiments\20260416_013429_ddpm_uncond_all_all_labels_res256_bs8_seed42\checkpoints\last.pth.tar
 
 
-python classifier_augment.py --epochs 100 --diffusion_checkpoint experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\last.pth.tar --ratios 2:1 3:2 5:5.0 6:4.0 --diffusion_module diffusion --num_classes 7 --time_scale_shift default --scheduler_config experiments\20260406_003627_ddpm_cond_all_all_labels_res128_bs32_seed42\scheduler\scheduler_config.json --gen_batch_size 64 --train_batch_size 96 --eval-freq 5 --save-every-eval 
 
-# 重构后diffusion的代码的命令行
-
-python -m diffusion.main --run_mode train --mode ddpm --train_batch_size 20 --eval_batch_size 20 --num_epochs 150 --resolution 128 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 1024 --use_class_conditioning --resnet_time_scale_shift scale_shift --resume_from_checkpoint experiments\20260413_031512_ddpm_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar
-
-## 训练cg扩散模型
-python -m diffusion.main --run_mode train --mode cg --cg_diffusion_ckpt_path experiments\20260413_031512_ddpm_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --classifier_train_epochs 100 --classifier_train_batch_size 96 --resolution 128 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 1024 --use_class_conditioning --resnet_time_scale_shift scale_shift
-
-python main.py --run_mode val_only --mode cfg --use_class_conditioning --resume_from_checkpoint experiments\your_exp_name\checkpoints\last.pth.tar --eval_batch_size 16 --resolution 128 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 512 --num_fid_samples_val 193 --seed 42
-
-python main.py --run_mode infer_only --mode cfg --use_class_conditioning --resume_from_checkpoint experiments\your_exp_name\checkpoints\last.pth.tar --infer_label MEL --infer_num_images 64 --eval_batch_size 16 --resolution 128 --ddpm_num_inference_steps 100 --use_ddim_sampling --seed 42
-
-# 重构后classifier的代码的命令行
-python -m classifier.main --epochs 100 --diffusion_checkpoint experiments\有条件(default)_CFG_ddpm_cond_all_all_labels_res128_bs24_seed42\checkpoints\last.pth.tar --ratios 2:1 3:2 5:5.0 6:4.0 --resnet_time_scale_shift scale_shift --gen-batch-size 64 --batch-size 96 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --use_ddim_sampling --use_class_conditioning --resolution 128 --mode cfg --cfg_scale 0.3 --cond_drop_prob 0.1 --ddpm_num_inference_steps 100 --ddpm_num_steps 1000
-
-python -m classifier.main --epochs 100 --diffusion_checkpoint experiments\有条件(default)_CFG_ddpm_cond_all_all_labels_res128_bs24_seed42\checkpoints\last.pth.tar --ratios 2:1 3:2 5:5.0 6:4.0 --resnet_time_scale_shift scale_shift --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --use_ddim_sampling --use_class_conditioning --resolution 128 --mode cfg --cfg_scale 0.3 --cond_drop_prob 0.1 --ddpm_num_inference_steps 100 --ddpm_num_steps 1000 --aug-output-dir experiments\分类器(增强_2_1_3_2_5_5_6_4)_CFG_gscale_0.3_resnet50_scratch_diffaug_lr0.001_bs96_seed42\train_augmented_data --use-amp --use-class-weights
 
 # git代码
 git checkout --orphan clean_branch
@@ -100,3 +88,6 @@ diffusion.py变成条件扩散模型
 
 ## version 2.10
 重构了代码
+
+## version 2.11
+加入了LDM的实现
