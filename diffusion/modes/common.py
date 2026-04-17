@@ -20,5 +20,4 @@ def get_modes(args):
     if args.mode == "latent_ddpm":
         return build_latent_ddpm(args)
 
-    # 这里做兜底，避免传入未支持的 mode
     raise ValueError(f"Unsupported mode: {mode}")

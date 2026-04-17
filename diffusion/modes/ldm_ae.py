@@ -11,8 +11,7 @@ from tqdm.auto import tqdm
 
 class VGGPerceptualLoss(nn.Module):
     """
-    一个最小可运行的感知损失（perceptual loss）实现。
-    这里只在用户把 ae_perceptual_loss_weight > 0 时才启用。
+    感知损失模块，基于预训练的 VGG16。
 
     输入张量约定：
         x_rec, x_target: [-1, 1], shape = [B, 3, H, W]
@@ -25,7 +24,7 @@ class VGGPerceptualLoss(nn.Module):
 
         vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features
 
-        # 取几段中低层特征，适合作为最小实现
+        # 取几段中低层特征
         self.blocks = nn.ModuleList(
             [
                 vgg[:4].eval(),
@@ -82,7 +81,6 @@ def _compute_kl_loss_from_posterior(posterior):
     """
     标准 VAE KL 项：
         KL(q(z|x) || N(0, I))
-    posterior 是 diffusers AutoencoderKL.encode(...).latent_dist
     """
     mu = posterior.mean
     logvar = posterior.logvar
@@ -108,13 +106,8 @@ def _compute_recon_loss(x_rec, x_target, loss_type="l1"):
 
 def _compute_patch_based_loss_placeholder(x_rec, x_target, args):
     """
-    patch-based loss 占位接口。
-    当前最小实现先返回 0。
-    以后你要接：
-        - patch discriminator
-        - patch perceptual loss
-        - patch contrastive loss
-    时，只替换这里。
+    patch-based loss 还没实现
+
     """
     return x_rec.new_zeros(())
 
@@ -129,8 +122,6 @@ def _encode_decode(model, x, sample_posterior=False):
     if sample_posterior:
         z = posterior.sample()
     else:
-        # 为避免不同 diffusers 版本对 mode() 的实现差异，
-        # 最稳妥地直接用 posterior.mean。
         z = posterior.mean
 
     x_rec = model.decode(z).sample
@@ -159,10 +150,6 @@ def _reconstruct_for_visualization(model, clean_images, args):
 
 
 def build_ldm_ae(args):
-    """
-    第一阶段 AE 预训练模式。
-    和你现有 ddpm/cfg/cg 一样，返回统一的 mode_ops 字典。
-    """
 
     def _pack_extra_components(extra_components):
         """
@@ -194,7 +181,7 @@ def build_ldm_ae(args):
         extra["log_interval"] = int(getattr(args, "ae_log_interval", 50))
         extra["step_counter"] = 0
 
-        # 感知损失模块：按需启用
+        # 感知损失模块
         perceptual_weight = float(getattr(args, "ae_perceptual_loss_weight", 0.0))
         if perceptual_weight > 0:
             perceptual_model = VGGPerceptualLoss(

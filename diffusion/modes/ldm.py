@@ -1,16 +1,6 @@
 # =========================
 # modes/latent_ddpm.py
 # 第二阶段：Latent-space DDPM
-#
-# 说明：
-# 1. 这个 mode 文件只负责“阶段二”的训练/采样逻辑
-# 2. 它假设 runtime.py / common.py 已经把它当作一个新的 mode 注册进来
-# 3. 它还假设 build_model(args, num_classes) 在 args.mode == "latent_ddpm" 时，
-#    已经构建了一个“运行在 latent 空间上的 UNet2DModel”
-#    即：
-#       in_channels = ae_latent_channels
-#       out_channels = ae_latent_channels
-#       sample_size = latent_resolution = resolution // ae_downsample_factor
 # =========================
 
 import os
@@ -29,8 +19,8 @@ def _tensor_to_uint8(x):
 @torch.no_grad()
 def _load_frozen_autoencoder(args, device):
     """
-    加载你第一阶段训练好的 AutoencoderKL，并冻结。
-    这里要求：
+    加载第一阶段训练好的 AutoencoderKL，并冻结。
+    注意：
         args.autoencoder_ckpt_path
     指向 save_pretrained(...) 保存出来的目录。
     """
@@ -84,9 +74,6 @@ def _decode_from_scaled_latents(vae, scaled_latents):
 
 
 def build_latent_ddpm(args):
-    """
-    第二阶段 latent diffusion 训练模式。
-    """
 
     def build_extra_components(num_classes, device):
         vae = _load_frozen_autoencoder(args, device=device)
@@ -147,7 +134,6 @@ def build_latent_ddpm(args):
 
         noisy_latents = noise_scheduler.add_noise(scaled_latents, noise, timesteps)
 
-        # 如果以后你想做 class-conditional latent diffusion，可以在这里把 class_labels 传进去
         class_labels = prepare_batch_labels(batch, scaled_latents.device)
         if args.use_class_conditioning and class_labels is not None:
             noise_pred = model(
@@ -182,7 +168,7 @@ def build_latent_ddpm(args):
         **kwargs,
     ):
         """
-        第二阶段真正采样流程：
+        第二阶段采样流程：
             Gaussian noise in latent space
             -> denoise in latent space
             -> decode by frozen VAE
@@ -240,7 +226,6 @@ def build_latent_ddpm(args):
         }
 
     def load_checkpoint_extra_state(checkpoint, extra_components, device):
-        # 当前最小实现不需要额外恢复
         return None
 
     return {
