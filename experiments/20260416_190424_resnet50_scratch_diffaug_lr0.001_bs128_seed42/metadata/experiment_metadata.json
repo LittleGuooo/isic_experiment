@@ -1,7 +1,7 @@
 {
     "experiment_name": "20260416_190424_resnet50_scratch_diffaug_lr0.001_bs128_seed42",
     "experiment_dir": "experiments\\20260416_190424_resnet50_scratch_diffaug_lr0.001_bs128_seed42",
-    "created_time": "2026-04-16 19:07:56",
+    "created_time": "2026-04-16 21:23:21",
     "model_name": "resnet50",
     "weights": null,
     "learning_rate": 0.001,
@@ -111,8 +111,8 @@
         "predictions_dir": "experiments\\20260416_190424_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\predictions"
     },
     "resume": {
-        "resume_path": null,
-        "start_epoch": 0
+        "resume_path": "experiments\\20260416_190424_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\checkpoints\\last.pth.tar",
+        "start_epoch": 29
     },
     "early_stopping": {
         "patience": 0,
@@ -123,10 +123,10 @@
         "stopped_early": false
     },
     "best_result": {
-        "best_epoch": 20,
-        "best_val_balanced_acc": 0.6119032535408843,
+        "best_epoch": 100,
+        "best_val_balanced_acc": 0.7318400530944086,
         "best_model_path": "experiments\\20260416_190424_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\checkpoints\\model_best.pth.tar"
     },
-    "last_epoch_finished": 20,
-    "updated_time": "2026-04-16 19:24:15"
+    "last_epoch_finished": 100,
+    "updated_time": "2026-04-16 22:17:55"
 }
