@@ -1,0 +1,45 @@
+{
+    "experiment_name": "20260417_173859_resnet50_test_only",
+    "experiment_dir": "experiments\\20260417_173859_resnet50_test_only",
+    "created_time": "2026-04-17 17:39:00",
+    "mode": "test_only",
+    "model_name": "resnet50",
+    "weights": null,
+    "batch_size": 128,
+    "seed": 42,
+    "device": "cuda:0",
+    "checkpoint_path": "experiments\\分类器(增强_2_1_3_2_5_5_6_4)_CFG_gscale_0.3_余弦退火_条件交叉熵_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\checkpoints\\last.pth.tar",
+    "data": {
+        "test_gt_csv_path": "dataset\\ISIC2018_Task3_Test_GroundTruth.csv",
+        "test_img_dir": "dataset\\ISIC2018_Task3_Test_Input",
+        "test_dataset_size": 1512,
+        "num_classes": 7,
+        "class_names": [
+            "MEL",
+            "NV",
+            "BCC",
+            "AKIEC",
+            "BKL",
+            "DF",
+            "VASC"
+        ],
+        "class_distribution": {
+            "MEL": "171 (11.31%)",
+            "NV": "909 (60.12%)",
+            "BCC": "93 (6.15%)",
+            "AKIEC": "43 (2.84%)",
+            "BKL": "217 (14.35%)",
+            "DF": "44 (2.91%)",
+            "VASC": "35 (2.31%)",
+            "Total": "1512 (100.00%)"
+        }
+    },
+    "paths": {
+        "metrics_csv": "experiments\\20260417_173859_resnet50_test_only\\metrics\\epoch_metrics.csv",
+        "metrics_json": "experiments\\20260417_173859_resnet50_test_only\\metrics\\epoch_metrics.json",
+        "metadata_json": "experiments\\20260417_173859_resnet50_test_only\\metadata\\experiment_metadata.json",
+        "roc_dir": "experiments\\20260417_173859_resnet50_test_only\\roc_curves",
+        "confusion_matrix_dir": "experiments\\20260417_173859_resnet50_test_only\\confusion_matrices",
+        "predictions_dir": "experiments\\20260417_173859_resnet50_test_only\\predictions"
+    }
+}

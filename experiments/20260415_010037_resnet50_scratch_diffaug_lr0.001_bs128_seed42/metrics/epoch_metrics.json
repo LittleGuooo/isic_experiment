@@ -1,0 +1,27 @@
+[
+    {
+        "epoch": 90,
+        "lr": 2.544727011057082e-05,
+        "train_loss": 0.3529218261444625,
+        "train_acc": 86.81648548404137,
+        "val_loss": 0.7348619146668232,
+        "val_acc": 74.61139896373057,
+        "val_balanced_acc": 0.39668801001553616,
+        "val_macro_recall": 0.39668801001553616,
+        "val_macro_f1": 0.4196137933679462,
+        "val_macro_precision": 0.45916104829148313,
+        "val_auc_macro_ovr": 0.9083029529671812,
+        "val_mean_auc_all_diagnoses": 0.9083029529671812,
+        "val_mean_ap_all_diagnoses": 0.48642065056657174,
+        "val_mean_sensitivity": 0.39668801001553616,
+        "val_mean_specificity": 0.9332389641732846,
+        "val_mean_ppv": 0.45916104829148313,
+        "val_mean_npv": 0.9442485957026413,
+        "val_melanoma_auc80": 0.8358250276854927,
+        "val_malignant_vs_benign_auc": 0.9174801708358755,
+        "roc_curve_path": "experiments\\20260415_010037_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\roc_curves\\epoch_090_roc.png",
+        "confusion_matrix_path": "experiments\\20260415_010037_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\confusion_matrices\\epoch_090_confusion_matrix.png",
+        "val_predictions_path": "experiments\\20260415_010037_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\predictions\\val_predictions_epoch_90.csv",
+        "detailed_metrics_path": "experiments\\20260415_010037_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\metrics\\epoch_090_detailed_metrics.json"
+    }
+]

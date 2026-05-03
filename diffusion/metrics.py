@@ -12,7 +12,13 @@ from torchmetrics.image.kid import KernelInceptionDistance
 from tqdm.auto import tqdm
 
 from .modeling import build_sampling_scheduler
-from .utils import format_count_ratio_dict, print_class_distribution, save_json
+from .utils import (
+    format_count_ratio_dict,
+    print_class_distribution,
+    save_json,
+    save_image_grid,
+)
+
 
 # Manifold 用于 IPR (Improved Precision/Recall) 评估
 Manifold = namedtuple("Manifold", ["features", "radii"])
@@ -425,6 +431,9 @@ def evaluate_split_with_overall_and_per_class_metrics(
     kid_subsets=50,
     kid_subset_size=50,
     compute_per_class_metrics=False,
+    compute_fid=True,
+    compute_kid=True,
+    compute_ipr=True,
     per_class_max_real_samples=None,
     modes=None,
     extra_components=None,
@@ -486,17 +495,32 @@ def evaluate_split_with_overall_and_per_class_metrics(
         fake_by_class, class_names, allocated_counts_by_class, device
     )
 
-    overall_fid = compute_fid_from_real_and_fake(real_overall, fake_overall, device)
-    overall_kid_mean, overall_kid_std = compute_kid_from_real_and_fake(
-        real_overall,
-        fake_overall,
-        device,
-        subsets=kid_subsets,
-        subset_size=kid_subset_size,
-    )
-    overall_precision, overall_recall = compute_manifold_precision_recall(
-        real_overall, fake_overall, device, k=ipr_k
-    )
+    # FID 开关：关闭时直接写 None，不调用 FID 计算函数。
+    if compute_fid:
+        overall_fid = compute_fid_from_real_and_fake(real_overall, fake_overall, device)
+    else:
+        overall_fid = None
+
+    # KID 开关：关闭时 kid_mean / kid_std 都写 None。
+    if compute_kid:
+        overall_kid_mean, overall_kid_std = compute_kid_from_real_and_fake(
+            real_overall,
+            fake_overall,
+            device,
+            subsets=kid_subsets,
+            subset_size=kid_subset_size,
+        )
+    else:
+        overall_kid_mean, overall_kid_std = None, None
+
+    # IPR 开关：关闭时 precision / recall 都写 None。
+    # IPR 这里指 manifold precision/recall，需要额外加载 VGG16，通常比较慢。
+    if compute_ipr:
+        overall_precision, overall_recall = compute_manifold_precision_recall(
+            real_overall, fake_overall, device, k=ipr_k
+        )
+    else:
+        overall_precision, overall_recall = None, None
 
     # 保存 overall 指标到 JSON
     overall_json_path = os.path.join(
@@ -528,6 +552,9 @@ def evaluate_split_with_overall_and_per_class_metrics(
             "ddim_eta": float(ddim_eta) if use_ddim_sampling else None,
             "use_class_conditioning": bool(use_class_conditioning),
             "overall_generated_follow_real_distribution": True,
+            "compute_fid": bool(compute_fid),
+            "compute_kid": bool(compute_kid),
+            "compute_ipr": bool(compute_ipr),
         },
         overall_json_path,
     )
@@ -537,7 +564,7 @@ def evaluate_split_with_overall_and_per_class_metrics(
     per_class_generated_dir = ""
     per_class_counts_by_class = {}
 
-    # 当前代码只对 train split 计算 per-class 指标
+    # 计算 train split 的 per-class 指标
     if compute_per_class_metrics and split_name == "train":
         if per_class_max_real_samples is None:
             raise ValueError(
@@ -620,21 +647,33 @@ def evaluate_split_with_overall_and_per_class_metrics(
                 }
                 continue
 
-            # 每个类别单独计算指标
-            fid_c = compute_fid_from_real_and_fake(real_c, fake_c, device)
-            kid_mean_c, kid_std_c = compute_kid_from_real_and_fake(
-                real_c,
-                fake_c,
-                device,
-                subsets=kid_subsets,
-                subset_size=min(kid_subset_size, class_count),
-            )
+            # 每个类别单独计算 FID。
+            if compute_fid:
+                fid_c = compute_fid_from_real_and_fake(real_c, fake_c, device)
+            else:
+                fid_c = None
 
-            # IPR 计算比较重，这里手动限制到最多 300 张
-            ipr_limit = 300
-            precision_c, recall_c = compute_manifold_precision_recall(
-                real_c[:ipr_limit], fake_c[:ipr_limit], device, k=ipr_k
-            )
+            # 每个类别单独计算 KID。
+            if compute_kid:
+                kid_mean_c, kid_std_c = compute_kid_from_real_and_fake(
+                    real_c,
+                    fake_c,
+                    device,
+                    subsets=kid_subsets,
+                    subset_size=min(kid_subset_size, class_count),
+                )
+            else:
+                kid_mean_c, kid_std_c = None, None
+
+            # 每个类别单独计算 IPR。
+            # IPR 比较耗时，所以原代码限制最多 300 张，这里保留。
+            if compute_ipr:
+                ipr_limit = 300
+                precision_c, recall_c = compute_manifold_precision_recall(
+                    real_c[:ipr_limit], fake_c[:ipr_limit], device, k=ipr_k
+                )
+            else:
+                precision_c, recall_c = None, None
 
             per_class_metrics[class_name] = {
                 "num_real_images": f"{class_count} ({ratio_c:.2f}%)",
@@ -669,6 +708,9 @@ def evaluate_split_with_overall_and_per_class_metrics(
                 "kid_subsets": int(kid_subsets),
                 "kid_subset_size": int(kid_subset_size),
                 "per_class_real_sample_rule": f"min(real_class_count, {int(per_class_max_real_samples)})",
+                "compute_fid": bool(compute_fid),
+                "compute_kid": bool(compute_kid),
+                "compute_ipr": bool(compute_ipr),
             },
             per_class_json_path,
         )
@@ -687,3 +729,173 @@ def evaluate_split_with_overall_and_per_class_metrics(
         "allocated_counts_by_class": allocated_counts_by_class,
         "per_class_counts_by_class": per_class_counts_by_class,
     }
+
+
+@torch.no_grad()
+def save_visual_samples_during_training(
+    args,
+    accelerator,
+    model,
+    noise_scheduler,
+    train_eval_loader,
+    class_names,
+    modes,
+    extra_components,
+    exp_folders,
+    epoch,
+):
+    """
+    训练过程中保存可视化样本。
+
+    支持两类模式：
+
+    1. 普通 diffusion 模式：
+        ddpm / cfg / cg / latent_ddpm
+        从随机噪声开始采样，保存生成图。
+
+    2. ldm_ae 模式：
+        从 train_eval_loader 取真实图像，
+        用 AutoencoderKL 做重建，
+        保存“原图 + 重建图”的对比网格。
+
+    统一由 args.num_visual_samples 控制样本数量。
+    """
+
+    if not accelerator.is_main_process:
+        return
+
+    num_visual_samples = int(getattr(args, "num_visual_samples", 16))
+
+    if num_visual_samples <= 0:
+        return
+
+    os.makedirs(exp_folders["samples_dir"], exist_ok=True)
+
+    was_training = model.training
+    model.eval()
+
+    device = accelerator.device
+
+    # =========================
+    # 1) ldm_ae：保存原图 + 重建图
+    # =========================
+    if args.mode == "ldm_ae":
+        source_batch = None
+
+        for batch in train_eval_loader:
+            source_batch = batch
+            break
+
+        if source_batch is None:
+            if was_training:
+                model.train()
+            return
+
+        # 只取 num_visual_samples 张图。
+        source_batch = dict(source_batch)
+        source_batch["input"] = source_batch["input"][:num_visual_samples]
+
+        # ldm_ae 的 sample_images 不是从噪声采样，
+        # 而是对 source_batch["input"] 做 autoencoder reconstruction。
+        recon_images = modes["sample_images"](
+            model=model,
+            sampling_scheduler=None,
+            device=device,
+            resolution=args.resolution,
+            batch_size=source_batch["input"].shape[0],
+            num_inference_steps=0,
+            generator=None,
+            class_labels=None,
+            extra_components=extra_components,
+            return_pil_safe_uint8=False,
+            source_batch=source_batch,
+        )
+
+        original_images = source_batch["input"].to(device)
+
+        # 拼成 [原图1, 重建1, 原图2, 重建2, ...]
+        # 这样保存出来更容易肉眼对比 AE 重建质量。
+        num_images = min(original_images.shape[0], recon_images.shape[0])
+        visual_pairs = []
+
+        for i in range(num_images):
+            visual_pairs.append(original_images[i])
+            visual_pairs.append(recon_images[i])
+
+        visual_grid_tensor = torch.stack(visual_pairs, dim=0)
+
+        save_path = os.path.join(
+            exp_folders["samples_dir"],
+            f"epoch_{epoch:03d}_ldm_ae_recon.png",
+        )
+
+        save_image_grid(
+            visual_grid_tensor,
+            save_path,
+            nrow=2,
+        )
+
+        if was_training:
+            model.train()
+
+        return
+
+    # =========================
+    # 2) diffusion：保存生成图
+    # =========================
+
+    sampling_scheduler = build_sampling_scheduler(
+        noise_scheduler=noise_scheduler,
+        use_ddim_sampling=args.use_ddim_sampling,
+    )
+
+    generator = torch.Generator(device=device).manual_seed(args.seed + epoch)
+
+    # 条件模型：构造类别标签。
+    # 这里用一个参数 num_visual_samples 控制总生成数量，
+    # 标签按类别循环分配，例如 7 类时：
+    # 0,1,2,3,4,5,6,0,1,2,...
+    if args.use_class_conditioning:
+        num_classes = len(class_names)
+
+        class_labels = (
+            torch.arange(
+                num_visual_samples,
+                device=device,
+                dtype=torch.long,
+            )
+            % num_classes
+        )
+
+        save_name = f"epoch_{epoch:03d}_class_cond_samples.png"
+
+    # 无条件模型：不传 class_labels。
+    else:
+        class_labels = None
+        save_name = f"epoch_{epoch:03d}_samples.png"
+
+    images = modes["sample_images"](
+        model=model,
+        sampling_scheduler=sampling_scheduler,
+        device=device,
+        resolution=args.resolution,
+        batch_size=num_visual_samples,
+        num_inference_steps=args.ddpm_num_inference_steps,
+        generator=generator,
+        class_labels=class_labels,
+        extra_components=extra_components,
+        return_pil_safe_uint8=False,
+    )
+
+    save_path = os.path.join(
+        exp_folders["samples_dir"],
+        save_name,
+    )
+
+    save_image_grid(
+        images,
+        save_path,
+    )
+
+    if was_training:
+        model.train()

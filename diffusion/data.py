@@ -191,40 +191,56 @@ def build_datasets_and_loaders(args):
     except Exception:
         pass
 
-    # 训练 DataLoader：shuffle=True，drop_last=True
-    train_dataloader = DataLoader(
-        train_dataset,
+    def _make_loader(
+        dataset,
+        batch_size,
+        shuffle,
+        drop_last,
+    ):
+        """
+        统一创建 DataLoader。
+
+        注意：
+        prefetch_factor 和 persistent_workers 只在 num_workers > 0 时使用。
+        当 num_workers=0 时，PyTorch 使用单进程加载数据，不应该显式传 prefetch_factor。
+        """
+        loader_kwargs = {
+            "dataset": dataset,
+            "batch_size": batch_size,
+            "shuffle": shuffle,
+            "num_workers": args.dataloader_num_workers,
+            "pin_memory": pin_memory,
+            "drop_last": drop_last,
+        }
+
+        if args.dataloader_num_workers > 0:
+            loader_kwargs["prefetch_factor"] = 2
+            loader_kwargs["persistent_workers"] = True
+
+        return DataLoader(**loader_kwargs)
+
+    # 训练 DataLoader：训练需要 shuffle=True，drop_last=True
+    train_dataloader = _make_loader(
+        dataset=train_dataset,
         batch_size=args.train_batch_size,
         shuffle=True,
-        num_workers=args.dataloader_num_workers,
-        pin_memory=pin_memory,
-        prefetch_factor=2,
         drop_last=True,
-        persistent_workers=args.dataloader_num_workers > 0,
     )
 
-    # train_eval_loader：用于在训练集上做评估
-    train_eval_loader = DataLoader(
-        train_dataset,
+    # train_eval_loader：用于训练集评估
+    train_eval_loader = _make_loader(
+        dataset=train_dataset,
         batch_size=args.eval_batch_size,
-        shuffle=True,
-        num_workers=args.dataloader_num_workers,
-        prefetch_factor=2,
-        pin_memory=pin_memory,
+        shuffle=False,
         drop_last=False,
-        persistent_workers=args.dataloader_num_workers > 0,
     )
 
     # val_eval_loader：验证集评估不需要打乱顺序
-    val_eval_loader = DataLoader(
-        val_dataset,
+    val_eval_loader = _make_loader(
+        dataset=val_dataset,
         batch_size=args.eval_batch_size,
         shuffle=False,
-        num_workers=args.dataloader_num_workers,
-        prefetch_factor=2,
-        pin_memory=pin_memory,
         drop_last=False,
-        persistent_workers=args.dataloader_num_workers > 0,
     )
 
     # 统一打包返回，减少主流程里的局部变量数量

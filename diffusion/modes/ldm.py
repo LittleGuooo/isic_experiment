@@ -20,25 +20,45 @@ def _tensor_to_uint8(x):
 def _load_frozen_autoencoder(args, device):
     """
     加载第一阶段训练好的 AutoencoderKL，并冻结。
-    注意：
-        args.autoencoder_ckpt_path
-    指向 save_pretrained(...) 保存出来的目录。
+
+    统一约定：
+        args.autoencoder_ckpt_path 必须指向 Diffusers save_pretrained 目录。
+
+    目录结构示例：
+        autoencoder_ema_last/
+            config.json
+            diffusion_pytorch_model.safetensors
+
+    不再直接支持 last.pth.tar：
+        last.pth.tar 是训练恢复 checkpoint，
+        不建议作为第二阶段 LDM 的 frozen VAE 输入。
     """
     ae_path = getattr(args, "autoencoder_ckpt_path", None)
+
     if ae_path is None:
         raise ValueError(
-            "latent_ddpm 模式下必须提供 args.autoencoder_ckpt_path "
-            "（指向第一阶段 AutoencoderKL 的 save_pretrained 目录）"
+            "latent_ddpm 模式下必须提供 args.autoencoder_ckpt_path，"
+            "并且该路径应指向 AutoencoderKL.save_pretrained(...) 保存的目录。"
         )
 
+    if not os.path.isdir(ae_path):
+        raise ValueError(
+            "args.autoencoder_ckpt_path 现在必须是 Diffusers save_pretrained 目录，"
+            f"但当前传入的是：{ae_path}"
+        )
+
+    # Diffusers 会从目录中的 config.json 和权重文件恢复完整 AutoencoderKL。
     vae = AutoencoderKL.from_pretrained(ae_path)
+
+    # 移动到当前设备，并固定为 eval 模式。
     vae = vae.to(device)
     vae.eval()
 
+    # 冻结 AE，第二阶段 LDM 只训练 latent-space UNet。
     for p in vae.parameters():
         p.requires_grad = False
 
-    # 可选显存优化
+    # 可选显存优化。
     if bool(getattr(args, "ae_use_slicing", False)):
         vae.enable_slicing()
 
@@ -49,9 +69,24 @@ def _load_frozen_autoencoder(args, device):
 
 
 @torch.no_grad()
-def _encode_to_latents(vae, clean_images, sample_posterior=True):
+def _encode_to_latents(vae, clean_images, sample_posterior=False):
     """
-    x -> posterior -> z
+    使用冻结的 AutoencoderKL 把图像编码到 latent space。
+
+    clean_images:
+        输入图像，shape 通常是 [B, 3, H, W]，范围为 [-1, 1]。
+
+    vae.encode(clean_images).latent_dist:
+        AutoencoderKL 的 encoder 不直接返回一个固定 latent tensor，
+        而是返回一个后验分布 q(z|x)，即 DiagonalGaussianDistribution。
+
+    sample_posterior=True:
+        从 q(z|x) 中随机采样 z，写作 z ~ q(z|x)。
+        随机性更强，更接近 VAE / LDM 的概率建模形式。
+
+    sample_posterior=False:
+        直接取 q(z|x) 的均值 posterior.mean。
+        更稳定，适合医学图像这类希望保留结构细节的任务。
     """
     posterior = vae.encode(clean_images).latent_dist
     if sample_posterior:
@@ -111,7 +146,6 @@ def build_latent_ddpm(args):
 
         clean_images = batch["input"]
 
-        # 冻结 AE，只负责提供 latent
         with torch.no_grad():
             posterior, latents = _encode_to_latents(
                 vae=vae,
@@ -151,6 +185,7 @@ def build_latent_ddpm(args):
             "latent_std": float(scaled_latents.detach().std().item()),
             "posterior_mean_abs": float(posterior.mean.detach().abs().mean().item()),
         }
+
         return diffusion_loss, aux
 
     @torch.no_grad()

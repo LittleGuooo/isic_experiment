@@ -1,10 +1,7 @@
-# 项目目录结构说明
+# 找BUG
 
-- `pretrained_models/`：用于存放下载的预训练模型权重（如 resnet18、resnet50 的 .pth 或 .safetensors 文件）。
-- `checkpoints/`：用于存放你训练过程中保存的模型权重（如 epoch_10.pth、best_model.pth 等）。
-- `logs/`：用于存放训练日志、tensorboard 日志、实验记录等。
-- `datasets/`：用于存放原始数据集或处理后的数据集副本。
-- `test.Ipynb`、`day1.py` 等：你的代码和实验脚本。
+## classifier
+
 
 
 # 训练扩散模型
@@ -39,7 +36,11 @@ python -m classifier.main --epochs 100 --diffusion_checkpoint experiments\有条
 python -m diffusion.main --run_mode train --mode ldm_ae --ae_mid_block_add_attention --ae_perceptual_loss_weight 0.2 --resolution 256 --ddpm_num_steps 1000 --exclude_train_nv --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 0 --use_ema --train_batch_size 8 --eval_epochs 10 --save_images_epochs 10 --num_epochs 50 --resume experiments\20260416_013429_ddpm_uncond_all_all_labels_res256_bs8_seed42\checkpoints\last.pth.tar
 
 
+python -m classifier.main --epochs 120 --ratios 2:1 3:1 5:5.0 6:4.0 --resnet_time_scale_shift scale_shift --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --use_ddim_sampling --use_class_conditioning --resolution 128 --mode cfg --ddpm_num_inference_steps 100 --ddpm_num_steps 1000 --use-amp --aug-output-dir experiments\分类器(增强_2_1_3_2_5_5_6_4)_CFG_gscale_0.3_resnet50_scratch_diffaug_lr0.001_bs96_seed42\train_augmented_data 
+|| echo script1.py failed, continue
 
+
+![alt text](image.png)
 
 # git代码
 git checkout --orphan clean_branch
@@ -51,6 +52,18 @@ git push -u origin clean_branch
 
 git count-objects -vH
 git rev-list --objects --all | git cat-file --batch-check="%(objecttype) %(objectname) %(objectsize) %(rest)" | sort -k3 -n | tail -20
+
+# 图片尺寸
+128 × 128
+192 × 192
+256 × 256
+320 × 320
+384 × 384
+448 × 448
+512 × 512
+640 × 640
+768 × 768
+
 
 # 更新说明
 ## version 1.0
@@ -91,3 +104,6 @@ diffusion.py变成条件扩散模型
 
 ## version 2.11
 加入了LDM的实现
+
+## version 2.12
+实现了LDM的cross-attention机制

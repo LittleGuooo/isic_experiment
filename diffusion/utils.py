@@ -6,31 +6,94 @@ from datetime import datetime
 
 import pandas as pd
 import torch
+import math
+from PIL import Image
+import random
+import numpy as np
+
+# utils.py
+
+
+def set_seed(seed):
+    # 固定 Python / NumPy / PyTorch 随机种子，便于复现实验
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def make_experiment_name(args):
-    # 用当前时间生成实验时间戳，便于区分不同运行
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    """
+    生成简洁、可读的实验文件夹名称。
 
-    # data_mode 用来区分是全类别训练还是单类别训练
-    mode_tag = args.data_mode
+    命名格式示例：
+        260429-1421_res128_ddpm_cond_all_seed42
+        260429-1421_res128_cfg_cond_all_scale3_seed42
+        260429-1421_res128_cg_cond_all_gs1_seed42
+        260429-1421_res128_ldm_ae_ae4_seed42
+        260429-1421_res128_latent_ddpm_z4_cond_all_seed42
 
-    # 如果是 single_label，就把目标类别写进实验名里，方便后续查看
-    # 如果是 all，则统一记为 all_labels
-    label_tag = (
-        f"label_{args.target_label}"
-        if args.data_mode == "single_label"
-        else "all_labels"
-    )
+    含义：
+        260429-1421 : 年月日-时分
+        res128      : 图像分辨率
+        ddpm/cfg... : 当前扩散模型类型
+        cond/uncond : 是否使用类别条件
+        all/label_x : 数据模式
+        seed42      : 随机种子
+    """
+    timestamp = datetime.now().strftime("%y%m%d-%H%M")
 
-    # 根据是否开启类别条件（class conditioning）写入 cond / uncond 标记
+    # 当前训练模式：ddpm / cfg / cg / ldm_ae / latent_ddpm
+    mode_tag = str(args.mode)
+
+    # 分辨率
+    res_tag = f"res{args.resolution}"
+
+    # 类别条件信息
     cond_tag = "cond" if args.use_class_conditioning else "uncond"
 
-    # 最终实验名包含：时间、任务类型、条件方式、数据模式、分辨率、batch size、随机种子
-    return (
-        f"{timestamp}_ddpm_{cond_tag}_{mode_tag}_{label_tag}"
-        f"_res{args.resolution}_bs{args.train_batch_size}_seed{args.seed}"
-    )
+    # 数据模式信息
+    if args.data_mode == "single_label":
+        label_tag = f"label{args.target_label}"
+    else:
+        label_tag = "all"
+
+    # seed
+    seed_tag = f"seed{args.seed}"
+
+    # 不同模式补充最关键的信息，避免文件夹名过长
+    extra_tags = []
+
+    if args.mode == "cfg":
+        # CFG 的核心超参是 guidance scale 和 label dropout
+        extra_tags.append(f"scale{args.cfg_scale:g}")
+        extra_tags.append(f"drop{args.cond_drop_prob:g}")
+
+    elif args.mode == "cg":
+        # CG 的核心超参是 classifier guidance scale
+        extra_tags.append(f"gs{args.classifier_guidance_scale:g}")
+
+    elif args.mode == "ldm_ae":
+        # Autoencoder 阶段最关键的是 latent_channels
+        extra_tags.append(f"ae{args.ae_latent_channels}")
+
+    elif args.mode == "latent_ddpm":
+        # latent diffusion 阶段最关键的是 latent_channels 和下采样倍率
+        extra_tags.append(f"z{args.ae_latent_channels}")
+        extra_tags.append(f"down{args.ae_downsample_factor}")
+
+    name_parts = [
+        timestamp,
+        res_tag,
+        mode_tag,
+        cond_tag,
+        label_tag,
+        *extra_tags,
+        seed_tag,
+    ]
+
+    return "_".join(name_parts)
 
 
 def setup_experiment_folders(base_dir, exp_name):
@@ -56,27 +119,15 @@ def setup_experiment_folders(base_dir, exp_name):
 
 
 def make_runtime_run_name(args):
-    # 运行时（val_only / infer_only）的名字也带时间戳，避免覆盖
+    # 单次推理运行名，带时间戳，避免覆盖历史生成结果。
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # 默认认为没有从 checkpoint 恢复
     ckpt_tag = "no_ckpt"
-
-    # 如果指定了 checkpoint，就把 checkpoint 文件名写进运行名中
     if args.resume_from_checkpoint is not None:
         ckpt_tag = os.path.splitext(os.path.basename(args.resume_from_checkpoint))[0]
 
-    # 记录当前采样器类型：DDPM 或 DDIM
     sampler_tag = "ddim" if args.use_ddim_sampling else "ddpm"
 
-    # val_only 模式下，把关键评估信息写入名字中
-    if args.run_mode == "val_only":
-        return (
-            f"{timestamp}_val_{ckpt_tag}_{sampler_tag}"
-            f"_steps{args.ddpm_num_inference_steps}_seed{args.seed}"
-        )
-
-    # infer_only 模式下，再额外记录生成类别和生成数量
     if args.run_mode == "infer_only":
         label_tag = str(args.infer_label) if args.infer_label is not None else "none"
         return (
@@ -84,23 +135,19 @@ def make_runtime_run_name(args):
             f"_n{args.infer_num_images}_steps{args.ddpm_num_inference_steps}_seed{args.seed}"
         )
 
-    # 其他模式暂时只返回时间戳
     return timestamp
 
 
 def setup_runtime_run_folders(exp_dir, run_mode, run_name):
-    # 根据运行模式决定根目录
-    if run_mode == "val_only":
-        root_dir = os.path.join(exp_dir, "run_vals")
-    elif run_mode == "infer_only":
+    # 当前只保留 infer_only。
+    # infer_only 的输出会放在原实验目录的 run_infers 子目录下。
+    if run_mode == "infer_only":
         root_dir = os.path.join(exp_dir, "run_infers")
     else:
-        raise ValueError(f"Unsupported run_mode for runtime folder: {run_mode}")
+        raise ValueError(f"Unsupported runtime folder mode: {run_mode}")
 
-    # 单次运行的总目录
     run_dir = os.path.join(root_dir, run_name)
 
-    # 这个目录结构主要服务于“只验证”和“只推理”两类运行
     folders = {
         "root_dir": root_dir,
         "run_dir": run_dir,
@@ -111,13 +158,196 @@ def setup_runtime_run_folders(exp_dir, run_mode, run_name):
         "run_summary_json": os.path.join(run_dir, "run_summary.json"),
     }
 
-    # 只有目录需要 mkdir，json 文件路径本身不需要提前创建
     for key, path in folders.items():
         if key.endswith("_json"):
             continue
         os.makedirs(path, exist_ok=True)
 
     return folders
+
+
+def create_experiment_folders(args):
+    """
+    Runtime 入口使用的统一实验目录创建函数。
+
+    train:
+        - 如果没有 --resume_from_checkpoint：创建新的实验目录。
+        - 如果有 --resume_from_checkpoint：复用 checkpoint 所属的原实验目录。
+
+    train_classifier:
+        - 如果提供 --classifier_ckpt_path 且该文件存在：复用 classifier checkpoint 所属实验目录。
+        - 否则创建新的 classifier 实验目录。
+
+    val_only / infer_only:
+        - 必须提供 --resume_from_checkpoint。
+        - 复用 checkpoint 所属实验目录，并在其中创建 run_vals / run_infers 子目录。
+    """
+
+    run_mode = getattr(args, "run_mode", "train")
+
+    # =========================================================
+    # 1) train: 普通 diffusion / ldm_ae / latent_ddpm 恢复训练
+    # =========================================================
+    if run_mode == "train":
+        resume_path = getattr(args, "resume_from_checkpoint", None)
+
+        if resume_path is not None:
+            # 从 checkpoint 读取原实验目录
+            checkpoint_data = torch.load(resume_path, map_location="cpu")
+            exp_dir = recover_exp_dir_from_checkpoint(
+                checkpoint_path=resume_path,
+                checkpoint_data=checkpoint_data,
+            )
+
+            folders = {
+                "exp_dir": exp_dir,
+                "checkpoints_dir": os.path.join(exp_dir, "checkpoints"),
+                "metrics_dir": os.path.join(exp_dir, "metrics"),
+                "metadata_dir": os.path.join(exp_dir, "metadata"),
+                "samples_dir": os.path.join(exp_dir, "samples"),
+                "fid_dir": os.path.join(exp_dir, "fid"),
+                "fid_generated_dir": os.path.join(exp_dir, "fid_generated_images"),
+            }
+
+            for path in folders.values():
+                os.makedirs(path, exist_ok=True)
+
+            folders["exp_name"] = os.path.basename(exp_dir)
+            folders["metadata_json_path"] = os.path.join(
+                folders["metadata_dir"],
+                "experiment_metadata.json",
+            )
+            folders["config_json_path"] = os.path.join(
+                folders["metadata_dir"],
+                "config.json",
+            )
+
+            # 写到 args 里，后面保存 checkpoint 时可以直接记录 exp_dir
+            args.exp_dir = exp_dir
+
+            return folders
+
+        # 没有 resume 时，创建全新实验目录
+        exp_name = make_experiment_name(args)
+        folders = setup_experiment_folders(args.output_dir, exp_name)
+
+        folders["exp_name"] = exp_name
+        folders["metadata_json_path"] = os.path.join(
+            folders["metadata_dir"],
+            "experiment_metadata.json",
+        )
+        folders["config_json_path"] = os.path.join(
+            folders["metadata_dir"],
+            "config.json",
+        )
+
+        args.exp_dir = folders["exp_dir"]
+
+        return folders
+
+    # =========================================================
+    # 2) train_classifier: CG guidance classifier 训练
+    # =========================================================
+    if run_mode == "train_classifier":
+        classifier_resume_path = getattr(args, "classifier_ckpt_path", None)
+
+        if classifier_resume_path is not None and os.path.isfile(
+            classifier_resume_path
+        ):
+            checkpoint_data = torch.load(classifier_resume_path, map_location="cpu")
+            exp_dir = recover_exp_dir_from_checkpoint(
+                checkpoint_path=classifier_resume_path,
+                checkpoint_data=checkpoint_data,
+            )
+
+            folders = {
+                "exp_dir": exp_dir,
+                "checkpoints_dir": os.path.join(exp_dir, "checkpoints"),
+                "metrics_dir": os.path.join(exp_dir, "metrics"),
+                "metadata_dir": os.path.join(exp_dir, "metadata"),
+                "samples_dir": os.path.join(exp_dir, "samples"),
+                "fid_dir": os.path.join(exp_dir, "fid"),
+                "fid_generated_dir": os.path.join(exp_dir, "fid_generated_images"),
+            }
+
+            for path in folders.values():
+                os.makedirs(path, exist_ok=True)
+
+            folders["exp_name"] = os.path.basename(exp_dir)
+            folders["metadata_json_path"] = os.path.join(
+                folders["metadata_dir"],
+                "experiment_metadata.json",
+            )
+            folders["config_json_path"] = os.path.join(
+                folders["metadata_dir"],
+                "config.json",
+            )
+
+            args.exp_dir = exp_dir
+
+            return folders
+
+        # 没有 classifier resume 时，创建新实验目录
+        exp_name = make_experiment_name(args)
+        folders = setup_experiment_folders(args.output_dir, exp_name)
+
+        folders["exp_name"] = exp_name
+        folders["metadata_json_path"] = os.path.join(
+            folders["metadata_dir"],
+            "experiment_metadata.json",
+        )
+        folders["config_json_path"] = os.path.join(
+            folders["metadata_dir"],
+            "config.json",
+        )
+
+        args.exp_dir = folders["exp_dir"]
+
+        return folders
+
+    # =========================================================
+    # 3) val_only / infer_only: 单独验证或推理
+    # =========================================================
+    if run_mode == "infer_only":
+        if getattr(args, "resume_from_checkpoint", None) is None:
+            raise ValueError(
+                "infer_only requires --resume_from_checkpoint so the experiment directory can be recovered."
+            )
+
+        checkpoint_path = args.resume_from_checkpoint
+        checkpoint_data = torch.load(checkpoint_path, map_location="cpu")
+
+        exp_dir = recover_exp_dir_from_checkpoint(
+            checkpoint_path=checkpoint_path,
+            checkpoint_data=checkpoint_data,
+        )
+
+        run_name = make_runtime_run_name(args)
+        run_folders = setup_runtime_run_folders(
+            exp_dir=exp_dir,
+            run_mode=run_mode,
+            run_name=run_name,
+        )
+
+        folders = {
+            "exp_dir": exp_dir,
+            "run_name": run_name,
+            "run_dir": run_folders["run_dir"],
+            "metrics_dir": run_folders["metrics_dir"],
+            "samples_dir": run_folders["generated_dir"],
+            "fid_dir": os.path.join(exp_dir, "fid"),
+            "fid_generated_dir": run_folders["generated_dir"],
+            "metadata_dir": run_folders["metadata_dir"],
+            "metadata_json_path": run_folders["run_summary_json"],
+            "config_json_path": run_folders["run_config_json"],
+            "checkpoints_dir": os.path.join(exp_dir, "checkpoints"),
+        }
+
+        args.exp_dir = exp_dir
+
+        return folders
+
+    raise ValueError(f"Unsupported run_mode: {run_mode}")
 
 
 def save_json(data, json_path):
@@ -257,7 +487,9 @@ def recover_exp_dir_from_checkpoint(checkpoint_path, checkpoint_data):
     return os.path.dirname(checkpoints_dir)
 
 
-def sync_experiment_metadata_for_resume(experiment_metadata, args, start_epoch, global_step):
+def sync_experiment_metadata_for_resume(
+    experiment_metadata, args, start_epoch, global_step
+):
     # 记录本次恢复训练的更新时间
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     experiment_metadata["updated_time"] = now_str
@@ -308,3 +540,145 @@ def sync_experiment_metadata_for_resume(experiment_metadata, args, start_epoch, 
     )
 
     return experiment_metadata
+
+
+def _tensor_to_pil_image(image_tensor):
+    """
+    Convert a tensor image to PIL.Image.
+
+    Supports:
+        [C, H, W]
+        value range [-1, 1] or [0, 1]
+    """
+
+    if image_tensor.ndim != 3:
+        raise ValueError(
+            f"Expected image tensor with shape [C, H, W], got {tuple(image_tensor.shape)}"
+        )
+
+    image_tensor = image_tensor.detach().cpu().float()
+
+    # If image looks normalized to [-1, 1], convert to [0, 1].
+    if image_tensor.min().item() < 0:
+        image_tensor = (image_tensor + 1.0) / 2.0
+
+    image_tensor = image_tensor.clamp(0.0, 1.0)
+
+    # [C, H, W] -> [H, W, C]
+    image_tensor = image_tensor.permute(1, 2, 0)
+
+    image_uint8 = (image_tensor * 255.0).round().to(torch.uint8).numpy()
+
+    if image_uint8.shape[-1] == 1:
+        image_uint8 = image_uint8[:, :, 0]
+        return Image.fromarray(image_uint8, mode="L")
+
+    if image_uint8.shape[-1] == 3:
+        return Image.fromarray(image_uint8, mode="RGB")
+
+    if image_uint8.shape[-1] == 4:
+        return Image.fromarray(image_uint8, mode="RGBA")
+
+    raise ValueError(
+        f"Unsupported channel count: {image_uint8.shape[-1]}. "
+        "Expected 1, 3, or 4 channels."
+    )
+
+
+def save_image_grid(
+    images,
+    save_path,
+    nrow=None,
+    padding=2,
+    background_color=(255, 255, 255),
+):
+    """
+    Save a batch/list of images as a single grid image.
+
+    Args:
+        images:
+            - torch.Tensor [B, C, H, W]
+            - torch.Tensor [C, H, W]
+            - list/tuple of PIL.Image
+            - list/tuple of torch.Tensor [C, H, W]
+        save_path:
+            Output image path.
+        nrow:
+            Number of images per row. If None, uses ceil(sqrt(num_images)).
+        padding:
+            Pixel padding between images.
+        background_color:
+            RGB background color for the canvas.
+    """
+
+    if torch.is_tensor(images):
+        if images.ndim == 3:
+            pil_images = [_tensor_to_pil_image(images)]
+        elif images.ndim == 4:
+            pil_images = [_tensor_to_pil_image(img) for img in images]
+        else:
+            raise ValueError(
+                f"Expected tensor shape [C, H, W] or [B, C, H, W], got {tuple(images.shape)}"
+            )
+
+    elif isinstance(images, (list, tuple)):
+        pil_images = []
+
+        for img in images:
+            if isinstance(img, Image.Image):
+                pil_images.append(img.convert("RGB"))
+            elif torch.is_tensor(img):
+                pil_images.append(_tensor_to_pil_image(img).convert("RGB"))
+            else:
+                raise TypeError(
+                    f"Unsupported image type inside list: {type(img)}. "
+                    "Expected PIL.Image or torch.Tensor."
+                )
+
+    else:
+        raise TypeError(
+            f"Unsupported images type: {type(images)}. "
+            "Expected torch.Tensor, list, or tuple."
+        )
+
+    if len(pil_images) == 0:
+        raise ValueError("Cannot save an empty image grid.")
+
+    # Ensure all images have the same size.
+    widths, heights = zip(*(img.size for img in pil_images))
+    target_width = max(widths)
+    target_height = max(heights)
+
+    resized_images = []
+    for img in pil_images:
+        if img.size != (target_width, target_height):
+            img = img.resize((target_width, target_height), Image.BICUBIC)
+        resized_images.append(img.convert("RGB"))
+
+    num_images = len(resized_images)
+
+    if nrow is None:
+        nrow = int(math.ceil(math.sqrt(num_images)))
+
+    nrow = max(1, int(nrow))
+    ncol = int(math.ceil(num_images / nrow))
+
+    grid_width = nrow * target_width + padding * (nrow - 1)
+    grid_height = ncol * target_height + padding * (ncol - 1)
+
+    grid = Image.new("RGB", (grid_width, grid_height), background_color)
+
+    for idx, img in enumerate(resized_images):
+        row = idx // nrow
+        col = idx % nrow
+
+        x = col * (target_width + padding)
+        y = row * (target_height + padding)
+
+        grid.paste(img, (x, y))
+
+    save_dir = os.path.dirname(save_path)
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+
+    grid.save(save_path)

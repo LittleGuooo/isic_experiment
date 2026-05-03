@@ -90,7 +90,7 @@ def parse_args():
     parser.add_argument(
         "--ae_perceptual_loss_weight",
         type=float,
-        default=0.0,
+        default=0.05,
         help="感知损失权重；默认 0 表示关闭",
     )
     parser.add_argument(
@@ -98,6 +98,50 @@ def parse_args():
         type=int,
         default=224,
         help="送入感知网络前的 resize 尺寸",
+    )
+
+    # ===== 对抗损失项 =====
+    parser.add_argument(
+        "--ae_adv_loss_weight",
+        type=float,
+        default=0.01,
+        help="生成器对抗损失权重；默认 0 表示关闭 PatchGAN 对抗训练",
+    )
+    parser.add_argument(
+        "--ae_adv_start_step",
+        type=int,
+        default=1000,
+        help="从第多少个 step 开始启用对抗损失；建议先让 AE 学会基本重建",
+    )
+    parser.add_argument(
+        "--ae_discriminator_base_channels",
+        type=int,
+        default=64,
+        help="PatchGAN 判别器基础通道数",
+    )
+    parser.add_argument(
+        "--ae_discriminator_lr",
+        type=float,
+        default=1e-4,
+        help="PatchGAN 判别器学习率",
+    )
+    parser.add_argument(
+        "--ae_discriminator_beta1",
+        type=float,
+        default=0.5,
+        help="PatchGAN 判别器 AdamW beta1",
+    )
+    parser.add_argument(
+        "--ae_discriminator_beta2",
+        type=float,
+        default=0.999,
+        help="PatchGAN 判别器 AdamW beta2",
+    )
+    parser.add_argument(
+        "--ae_discriminator_weight_decay",
+        type=float,
+        default=0.0,
+        help="PatchGAN 判别器 AdamW weight decay",
     )
 
     # ===== Sampling / reconstruction behavior =====
@@ -158,6 +202,34 @@ def parse_args():
         help="CG 模式下分类器 guidance scale",
     )
 
+    parser.add_argument(
+        "--classifier_base_channels",
+        type=int,
+        default=128,
+        help="Base channels for standalone noisy timestep classifier.",
+    )
+
+    parser.add_argument(
+        "--classifier_time_dim",
+        type=int,
+        default=512,
+        help="Timestep embedding dimension for standalone noisy timestep classifier.",
+    )
+
+    parser.add_argument(
+        "--classifier_dropout",
+        type=float,
+        default=0.1,
+        help="Dropout for standalone noisy timestep classifier.",
+    )
+
+    parser.add_argument(
+        "--classifier_weight_decay",
+        type=float,
+        default=0.01,
+        help="Weight decay for standalone noisy timestep classifier.",
+    )
+
     # ----------------------------
     # cfg模式相关参数
     # ----------------------------
@@ -203,8 +275,12 @@ def parse_args():
         "--run_mode",
         type=str,
         default="train",
-        choices=["train", "val_only", "infer_only"],
-        help="train: 正常训练；val_only: 仅评估；infer_only: 仅推理生成图片",
+        choices=["train", "train_classifier", "infer_only"],
+        help=(
+            "train: 训练 diffusion / autoencoder / latent diffusion；"
+            "train_classifier: 只训练 CG guidance classifier；"
+            "infer_only: 加载训练好的 diffusion checkpoint，只生成图片，不训练"
+        ),
     )
     parser.add_argument(
         "--infer_label",
@@ -321,6 +397,11 @@ def parse_args():
     # 实验输出与训练配置
     # ----------------------------
     parser.add_argument(
+        "--use_tensorboard",
+        action="store_true",
+        help="是否启用 TensorBoard 日志记录；不传该参数时默认关闭",
+    )
+    parser.add_argument(
         "--output_root",
         type=str,
         default="experiments",
@@ -350,13 +431,13 @@ def parse_args():
     parser.add_argument(
         "--num_epochs",
         type=int,
-        default=40,
+        default=100,
         help="总训练轮数",
     )
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=1,
+        default=4,
         help="梯度累积步数",
     )
     parser.add_argument(
@@ -394,8 +475,9 @@ def parse_args():
     )
     parser.add_argument(
         "--use_ema",
-        action="store_true",
-        help="训练时启用 EMA（Exponential Moving Average）权重；评估/推理/保存时优先使用 EMA 权重",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否启用 EMA（Exponential Moving Average）权重。默认开启；可用 --no-use_ema 关闭。",
     )
     parser.add_argument(
         "--ema_decay",
@@ -408,12 +490,12 @@ def parse_args():
     # 扩散过程相关参数
     # ----------------------------
     parser.add_argument(
-        "--ddpm_num_steps", type=int, default=1000, help="DDPM 训练时的总扩散步数 T"
+        "--ddpm_num_steps", type=int, default=1000, help="DDPM 训练时的总扩散步数"
     )
     parser.add_argument(
         "--ddpm_num_inference_steps",
         type=int,
-        default=1000,
+        default=100,
         help="推理/采样时的去噪步数",
     )
     parser.add_argument(
@@ -438,9 +520,19 @@ def parse_args():
         help="每隔多少 epoch 保存一批可视化生成样本",
     )
     parser.add_argument(
+        "--num_visual_samples",
+        type=int,
+        default=32,
+        help=(
+            "训练过程中每次保存多少张可视化样本；"
+            "对普通 diffusion 表示生成图数量；"
+            "对 ldm_ae 表示重建对比中的原图数量"
+        ),
+    )
+    parser.add_argument(
         "--save_model_epochs",
         type=int,
-        default=1,
+        default=10,
         help="每隔多少 epoch 保存一次模型 checkpoint",
     )
     parser.add_argument(
@@ -452,7 +544,7 @@ def parse_args():
     parser.add_argument(
         "--num_fid_samples_train",
         type=int,
-        default=1024,
+        default=0,
         help="用于计算训练集 FID 的生成图片数量；0 表示跳过训练集 FID",
     )
     parser.add_argument(
@@ -468,6 +560,61 @@ def parse_args():
         type=int,
         default=3,
         help="流形估计的 k 近邻数",
+    )
+    parser.add_argument(
+        "--compute_fid",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否计算 FID。关闭方式：--no-compute_fid",
+    )
+
+    parser.add_argument(
+        "--compute_kid",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否计算 KID。关闭方式：--no-compute_kid",
+    )
+
+    parser.add_argument(
+        "--compute_ipr",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否计算 manifold precision/recall，也就是 IPR。关闭方式：--no-compute_ipr",
+    )
+
+    parser.add_argument(
+        "--kid_subsets",
+        type=int,
+        default=50,
+        help="KID 计算时使用的 subset 数量",
+    )
+
+    parser.add_argument(
+        "--kid_subset_size",
+        type=int,
+        default=50,
+        help="KID 每个 subset 的样本数",
+    )
+
+    parser.add_argument(
+        "--per_class_max_real_samples",
+        type=int,
+        default=300,
+        help="per-class 指标计算时，每类最多使用多少真实图像",
+    )
+
+    parser.add_argument(
+        "--max_grad_norm",
+        type=float,
+        default=1.0,
+        help="梯度裁剪阈值",
+    )
+
+    parser.add_argument(
+        "--infer_samples_per_class",
+        type=int,
+        default=8,
+        help="infer_only 且使用类别条件时，每个类别生成多少张图",
     )
 
     # 随机种子用于复现实验
@@ -488,15 +635,6 @@ def validate_args(args):
                 "ldm_ae 模式下当前不使用类别条件，请关闭 --use_class_conditioning"
             )
 
-        if args.ae_kl_loss_weight < 0:
-            raise ValueError("--ae_kl_loss_weight 必须 >= 0")
-
-        if args.ae_patch_loss_weight < 0:
-            raise ValueError("--ae_patch_loss_weight 必须 >= 0")
-
-        if args.ae_recon_loss_weight < 0:
-            raise ValueError("--ae_recon_loss_weight 必须 >= 0")
-
     # cg相关的参数检查
     if args.mode == "cg":
         # 只有 val_only / infer_only 才强制要求 classifier checkpoint
@@ -508,13 +646,10 @@ def validate_args(args):
                 "CG mode with val_only / infer_only requires --classifier_ckpt_path."
             )
 
-    # 仅验证 / 仅推理时，必须提供 diffusion checkpoint
-    if (
-        args.run_mode in ["val_only", "infer_only"]
-        and args.resume_from_checkpoint is None
-    ):
+    # infer_only 表示只推理、不训练。
+    if args.run_mode == "infer_only" and args.resume_from_checkpoint is None:
         raise ValueError(
-            f"When run_mode='{args.run_mode}', --resume_from_checkpoint must be provided."
+            "When run_mode='infer_only', --resume_from_checkpoint must be provided."
         )
 
     # single_label 模式必须指定目标类别
@@ -541,11 +676,6 @@ def validate_args(args):
     if args.mode in ["cfg", "cg"] and not args.use_class_conditioning:
         raise ValueError("mode='cfg' or 'cg' requires --use_class_conditioning.")
 
-    # CFG 的标签丢弃概率需要在 [0, 1) 内
-    if args.mode == "cfg":
-        if not (0.0 <= args.cond_drop_prob < 1.0):
-            raise ValueError("--cond_drop_prob must be in [0, 1).")
-
     # 条件推理时必须给 infer_label
     if args.run_mode == "infer_only":
         if args.use_class_conditioning and args.infer_label is None:
@@ -556,5 +686,8 @@ def validate_args(args):
             raise ValueError(
                 "Current run is unconditional (use_class_conditioning=False), so --infer_label should not be specified."
             )
+
+    # 兼容别名
+    args.output_dir = args.output_root
 
     return args

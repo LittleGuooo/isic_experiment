@@ -1,6 +1,5 @@
-import json
 import os
-
+import json
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -18,15 +17,7 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import label_binarize
 
-
-def save_json(data, json_path):
-    """
-    把 Python 对象保存成 JSON 文件。
-    ensure_ascii=False 表示保存中文时不转义。
-    indent=4 表示格式化缩进，便于阅读。
-    """
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+from .utils import save_json
 
 
 def update_epoch_metrics_csv(metrics_csv_path, row_dict):
