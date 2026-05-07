@@ -77,10 +77,18 @@ def run_diffusion_training_loop(
                     max_grad_norm = getattr(args, "max_grad_norm", 1.0)
                     accelerator.clip_grad_norm_(model.parameters(), max_grad_norm)
 
+                # 做梯度清空
+                if args.mode == "sd_textual_inversion":
+                    modes["before_optimizer_step"](extra_components, accelerator)
+
                 optimizer.step()
 
-                # EMA 更新
-                if ema_model is not None:
+                # 恢复非 placeholder embedding
+                if args.mode == "sd_textual_inversion":
+                    modes["after_optimizer_step"](extra_components, accelerator)
+
+                # EMA 更新：
+                if accelerator.sync_gradients and ema_model is not None:
                     decay = float(getattr(args, "ema_decay", 0.9999))
                     unwrapped_model = accelerator.unwrap_model(model)
                     ema_model.to(accelerator.device)

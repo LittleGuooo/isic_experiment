@@ -9,8 +9,10 @@ from sklearn.metrics import (
     auc,
     average_precision_score,
     balanced_accuracy_score,
+    cohen_kappa_score,
     confusion_matrix,
     f1_score,
+    matthews_corrcoef,
     precision_score,
     roc_auc_score,
     roc_curve,
@@ -273,6 +275,7 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
     per_class_f1_list = []
     per_class_ppv_list = []
     per_class_npv_list = []
+    per_class_youden_list = []
 
     total_samples = cm.sum()
 
@@ -285,6 +288,12 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
 
         sensitivity = safe_div(tp, tp + fn)  # 召回率 / 真阳性率
         specificity = safe_div(tn, tn + fp)  # 特异性
+        # 约登指数
+        youden_index = (
+            sensitivity + specificity - 1.0
+            if not np.isnan(sensitivity) and not np.isnan(specificity)
+            else float("nan")
+        )
         accuracy_i = safe_div(tp + tn, total_samples)
         ppv = safe_div(tp, tp + fp)  # 阳性预测值（Precision）
         npv = safe_div(tn, tn + fn)  # 阴性预测值
@@ -330,6 +339,9 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
             "auc80": (
                 float(melanoma_auc80) if not np.isnan(melanoma_auc80) else float("nan")
             ),
+            "youden_index": (
+                float(youden_index) if not np.isnan(youden_index) else float("nan")
+            ),
         }
 
         per_class_auc_list.append(auc_i)
@@ -340,14 +352,15 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
         per_class_f1_list.append(f1_i)
         per_class_ppv_list.append(ppv)
         per_class_npv_list.append(npv)
+        per_class_youden_list.append(youden_index)
 
-    # =========================
     # 整体多分类指标
-    # =========================
     overall_accuracy = accuracy_score(y_true, y_pred) * 100.0
     balanced_macro_recall = balanced_accuracy_score(y_true, y_pred)
     macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
     macro_precision = precision_score(y_true, y_pred, average="macro", zero_division=0)
+    mcc = matthews_corrcoef(y_true, y_pred)
+    cohen_kappa = cohen_kappa_score(y_true, y_pred, labels=labels)
 
     # 多分类宏平均 AUC（One-vs-Rest）
     try:
@@ -405,6 +418,9 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
                 if not np.isnan(malignant_vs_benign_auc)
                 else float("nan")
             ),
+            "mcc": float(mcc),
+            "cohen_kappa": float(cohen_kappa),
+            "mean_youden_index": float(np.nanmean(per_class_youden_list)),
         },
         "per_class": per_class_metrics,
         "malignant_definition_used": malignant_names,

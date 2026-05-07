@@ -8,9 +8,89 @@ def parse_args():
     )
 
     # =========================
+    # Stable Diffusion Textual Inversion
+    # =========================
+    parser.add_argument(
+        "--ti_placeholder_tokens",
+        type=str,
+        nargs="+",
+        default=[
+            "<isic-mel>",
+            "<isic-nv>",
+            "<isic-bcc>",
+            "<isic-akiec>",
+            "<isic-bkl>",
+            "<isic-df>",
+            "<isic-vasc>",
+        ],
+    )
+
+    parser.add_argument(
+        "--ti_initializer_tokens",
+        type=str,
+        nargs="+",
+        default=[
+            "melanoma",
+            "nevus",
+            "carcinoma",
+            "lesion",
+            "keratosis",
+            "fibroma",
+            "vascular",
+        ],
+    )
+
+    # =========================
+    # Stable Diffusion Full Fine-tuning
+    # =========================
+    parser.add_argument(
+        "--pretrained_model_name_or_path",
+        type=str,
+        default="C:/Users/Admin/.cache/huggingface/hub/models--nota-ai--bk-sdm-small/snapshots/572238db7ed3a10858900803f3fc8cca53e893e0",
+        # default="C:/Users/Admin/.cache/huggingface/hub/models--stable-diffusion-v1-5--stable-diffusion-v1-5/snapshots/451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+        help="Stable Diffusion 预训练模型名称或本地路径，仅 mode=sd_full 时使用。",
+    )
+    parser.add_argument(
+        "--sd_enable_gradient_checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="sd_full 模式下是否开启 UNet gradient checkpointing。默认开启以降低显存。",
+    )
+    parser.add_argument(
+        "--sd_enable_xformers",
+        action="store_true",
+        help="sd_full 模式下是否开启 xFormers memory efficient attention。需要你本地已正确安装 xformers。",
+    )
+
+    # =========================
+    # LDM Cross-Attention 条件注入
+    # =========================
+    parser.add_argument(
+        "--use_cross_attention_conditioning",
+        action="store_true",
+        help=(
+            "开启 latent_ddpm 的 cross-attention 类别条件注入方式。"
+            "当前最小实现为 class label -> nn.Embedding -> encoder_hidden_states。"
+            "不能与 --use_class_conditioning 同时开启。"
+        ),
+    )
+    parser.add_argument(
+        "--cross_attention_dim",
+        type=int,
+        default=256,
+        help="cross-attention 条件 token 的特征维度，即 encoder_hidden_states 最后一维。",
+    )
+
+    parser.add_argument(
+        "--attention_head_dim",
+        type=int,
+        default=8,
+        help="UNet2DConditionModel 中 attention head 的维度。",
+    )
+
+    # =========================
     # ldm 模式相关参数
     # =========================
-
     parser.add_argument(
         "--autoencoder_ckpt_path",
         type=str,
@@ -165,13 +245,6 @@ def parse_args():
     # cg模式相关参数
     # ----------------------------
     parser.add_argument(
-        "--cg_diffusion_ckpt_path",
-        type=str,
-        default=None,
-        help="CG 模式下，用一个已训练好的 diffusion checkpoint 来构建并训练 guidance classifier；"
-        "若提供该参数，则 runtime 会跳过 diffusion 训练，只训练 classifier。",
-    )
-    parser.add_argument(
         "--classifier_train_epochs",
         type=int,
         default=30,
@@ -182,12 +255,6 @@ def parse_args():
         type=float,
         default=1e-4,
         help="CG 模式下 classifier 的学习率",
-    )
-    parser.add_argument(
-        "--classifier_train_batch_size",
-        type=int,
-        default=None,
-        help="CG 模式下 classifier 训练 batch size；默认复用 train_batch_size",
     )
     parser.add_argument(
         "--classifier_ckpt_path",
@@ -253,7 +320,15 @@ def parse_args():
         "--mode",
         type=str,
         default="ddpm",
-        choices=["ddpm", "cfg", "cg", "ldm_ae", "latent_ddpm"],
+        choices=[
+            "ddpm",
+            "cfg",
+            "cg",
+            "ldm_ae",
+            "latent_ddpm",
+            "sd_full",
+            "sd_textual_inversion",
+        ],
         help="运行模式",
     )
 
@@ -261,7 +336,7 @@ def parse_args():
     parser.add_argument(
         "--resnet_time_scale_shift",
         type=str,
-        default="default",
+        default="scale_shift",
         choices=["default", "scale_shift"],
         help="ResNet 时间尺度移位方式",
     )
@@ -275,41 +350,11 @@ def parse_args():
         "--run_mode",
         type=str,
         default="train",
-        choices=["train", "train_classifier", "infer_only"],
+        choices=["train", "train_classifier"],
         help=(
             "train: 训练 diffusion / autoencoder / latent diffusion；"
             "train_classifier: 只训练 CG guidance classifier；"
-            "infer_only: 加载训练好的 diffusion checkpoint，只生成图片，不训练"
         ),
-    )
-    parser.add_argument(
-        "--infer_label",
-        type=str,
-        default=None,
-        choices=[
-            None,
-            "MEL",
-            "NV",
-            "BCC",
-            "AKIEC",
-            "BKL",
-            "DF",
-            "VASC",
-            "0",
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-        ],
-        help="infer_only 模式下指定生成类别；若模型是 conditional，则建议必须指定",
-    )
-    parser.add_argument(
-        "--infer_num_images",
-        type=int,
-        default=0,
-        help="infer_only 模式下要生成的图片数量",
     )
     parser.add_argument(
         "--use_ddim_sampling",
@@ -485,6 +530,11 @@ def parse_args():
         default=0.9999,
         help="EMA 衰减系数",
     )
+    parser.add_argument(
+        "--use_weighted_sampler",
+        action="store_true",
+        help="训练扩散模型时是否启用 WeightedRandomSampler，以提高少数类被采样的概率。",
+    )
 
     # ----------------------------
     # 扩散过程相关参数
@@ -610,13 +660,6 @@ def parse_args():
         help="梯度裁剪阈值",
     )
 
-    parser.add_argument(
-        "--infer_samples_per_class",
-        type=int,
-        default=8,
-        help="infer_only 且使用类别条件时，每个类别生成多少张图",
-    )
-
     # 随机种子用于复现实验
     parser.add_argument("--seed", type=int, default=42, help="全局随机种子")
 
@@ -624,10 +667,27 @@ def parse_args():
 
 
 def validate_args(args):
+    # sd_full 模式相关参数检查
+    if args.mode == "sd_full":
+        if args.pretrained_model_name_or_path is None:
+            raise ValueError("mode='sd_full' requires --pretrained_model_name_or_path.")
 
-    # =========================
+    # use_class_conditioning 和 use_cross_attention_conditioning 是两种不同的条件注入路径。
+    # 当前最小实现中不允许同时开启，避免类别条件被重复注入。
+    if args.use_class_conditioning and args.use_cross_attention_conditioning:
+        raise ValueError(
+            "--use_class_conditioning and --use_cross_attention_conditioning cannot be enabled at the same time. "
+            "--use_class_conditioning uses num_class_embeds + class_labels; "
+            "--use_cross_attention_conditioning uses class label -> nn.Embedding -> encoder_hidden_states."
+        )
+
+    # 当前 cross-attention 条件注入只给 latent_ddpm 使用。
+    if args.use_cross_attention_conditioning and args.mode != "latent_ddpm":
+        raise ValueError(
+            "--use_cross_attention_conditioning is currently only supported when mode='latent_ddpm'."
+        )
+
     # ldm_ae 模式相关参数检查
-    # =========================
     if args.mode == "ldm_ae":
         # 当前只是 AE 预训练，不需要 diffusion 采样相关约束
         if args.use_class_conditioning:
@@ -635,28 +695,16 @@ def validate_args(args):
                 "ldm_ae 模式下当前不使用类别条件，请关闭 --use_class_conditioning"
             )
 
-    # cg相关的参数检查
-    if args.mode == "cg":
-        # 只有 val_only / infer_only 才强制要求 classifier checkpoint
-        if (
-            args.run_mode in ["val_only", "infer_only"]
-            and args.classifier_ckpt_path is None
-        ):
+    if args.mode == "cg" and args.run_mode == "train":
+        if args.classifier_ckpt_path is None:
+            # 允许先训练 diffusion；没有 classifier 时，CG 采样不会启用 classifier guidance。
+            pass
+
+        # single_label 模式必须指定目标类别
+        if args.data_mode == "single_label" and args.target_label is None:
             raise ValueError(
-                "CG mode with val_only / infer_only requires --classifier_ckpt_path."
+                "When data_mode='single_label', --target_label must be provided."
             )
-
-    # infer_only 表示只推理、不训练。
-    if args.run_mode == "infer_only" and args.resume_from_checkpoint is None:
-        raise ValueError(
-            "When run_mode='infer_only', --resume_from_checkpoint must be provided."
-        )
-
-    # single_label 模式必须指定目标类别
-    if args.data_mode == "single_label" and args.target_label is None:
-        raise ValueError(
-            "When data_mode='single_label', --target_label must be provided."
-        )
 
     # 如果只训练单一类别 NV，同时又要求剔除训练集 NV，会导致训练集为空
     if (
@@ -668,24 +716,9 @@ def validate_args(args):
             "When --exclude_train_nv is enabled, target_label cannot be NV in single_label mode."
         )
 
-    # 仅推理时，生成张数必须 > 0
-    if args.run_mode == "infer_only" and args.infer_num_images <= 0:
-        raise ValueError("When run_mode='infer_only', --infer_num_images must be > 0.")
-
     # CFG / CG 都依赖类别条件
     if args.mode in ["cfg", "cg"] and not args.use_class_conditioning:
         raise ValueError("mode='cfg' or 'cg' requires --use_class_conditioning.")
-
-    # 条件推理时必须给 infer_label
-    if args.run_mode == "infer_only":
-        if args.use_class_conditioning and args.infer_label is None:
-            raise ValueError(
-                "When use_class_conditioning=True and run_mode='infer_only', --infer_label must be specified."
-            )
-        if (not args.use_class_conditioning) and args.infer_label is not None:
-            raise ValueError(
-                "Current run is unconditional (use_class_conditioning=False), so --infer_label should not be specified."
-            )
 
     # 兼容别名
     args.output_dir = args.output_root

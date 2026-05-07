@@ -19,7 +19,6 @@ from .utils import (
     save_image_grid,
 )
 
-
 # Manifold 用于 IPR (Improved Precision/Recall) 评估
 Manifold = namedtuple("Manifold", ["features", "radii"])
 
@@ -855,7 +854,7 @@ def save_visual_samples_during_training(
     # 这里用一个参数 num_visual_samples 控制总生成数量，
     # 标签按类别循环分配，例如 7 类时：
     # 0,1,2,3,4,5,6,0,1,2,...
-    if args.use_class_conditioning:
+    if args.use_class_conditioning or args.use_cross_attention_conditioning:
         num_classes = len(class_names)
 
         class_labels = (
@@ -868,7 +867,6 @@ def save_visual_samples_during_training(
         )
 
         save_name = f"epoch_{epoch:03d}_class_cond_samples.png"
-
     # 无条件模型：不传 class_labels。
     else:
         class_labels = None

@@ -17,6 +17,7 @@ from diffusion.modes.ddpm import build_ddpm
 from diffusion.modes.cfg import build_cfg
 from diffusion.modes.cg import build_cg
 from diffusion.modes.ldm import build_latent_ddpm
+from diffusion.modes.sd_full import build_sd_full
 
 # 支持的模式工厂
 MODE_FACTORY = {
@@ -24,6 +25,7 @@ MODE_FACTORY = {
     "cfg": build_cfg,
     "cg": build_cg,
     "latent_ddpm": build_latent_ddpm,
+    "sd_full": build_sd_full,
 }
 
 
@@ -233,7 +235,7 @@ def build_train_dataset(
             )
 
             class_labels = None
-            if args.use_class_conditioning:
+            if args.use_class_conditioning or args.use_cross_attention_conditioning:
                 class_labels = torch.full(
                     (cur_bs,),
                     fill_value=class_idx,

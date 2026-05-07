@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from diffusers import (
     DDPMPipeline,
     DDIMPipeline,
@@ -6,10 +7,106 @@ from diffusers import (
     DDIMScheduler,
     UNet2DModel,
     AutoencoderKL,
+    UNet2DConditionModel,
 )
 
 
+class ClassConditionedUNet2DConditionModel(nn.Module):
+    """
+    用 class label 构造 cross-attention 条件的最小 wrapper。
+
+    输入:
+        sample: noisy latents, shape = [B, C, H, W]
+        timesteps: diffusion timesteps
+        class_labels: shape = [B]
+
+    内部流程:
+        class_labels
+        -> nn.Embedding(num_classes, cross_attention_dim)
+        -> unsqueeze(1)
+        -> encoder_hidden_states, shape = [B, 1, cross_attention_dim]
+        -> UNet2DConditionModel(..., encoder_hidden_states=...)
+
+    这样做的好处:
+        1. class_condition_embedding 会包含在 model.parameters() 里；
+        2. optimizer 会自动优化它；
+        3. checkpoint 保存 model.state_dict() 时会自动保存它；
+        4. EMA 模型也会自动包含它。
+    """
+
+    def __init__(
+        self,
+        unet,
+        num_classes,
+        cross_attention_dim,
+    ):
+        super().__init__()
+        self.unet = unet
+        self.class_condition_embedding = nn.Embedding(
+            num_classes,
+            cross_attention_dim,
+        )
+
+        # 暴露 config，兼容你现有代码里 model.config.in_channels 等访问方式。
+        self.config = unet.config
+
+    @property
+    def dtype(self):
+        return self.unet.dtype
+
+    def forward(
+        self,
+        sample,
+        timesteps,
+        class_labels=None,
+        encoder_hidden_states=None,
+        **kwargs,
+    ):
+        # 如果外部没有直接传 encoder_hidden_states，就用 class_labels 构造。
+        if encoder_hidden_states is None:
+            if class_labels is None:
+                raise ValueError(
+                    "cross_attention conditioning requires class_labels or encoder_hidden_states."
+                )
+
+            # class_labels: [B]
+            # condition: [B, cross_attention_dim]
+            condition = self.class_condition_embedding(class_labels.long())
+
+            # encoder_hidden_states: [B, 1, cross_attention_dim]
+            # sequence_length=1 表示每张图只有一个类别条件 token。
+            encoder_hidden_states = condition.unsqueeze(1)
+
+        return self.unet(
+            sample,
+            timesteps,
+            encoder_hidden_states=encoder_hidden_states,
+            **kwargs,
+        )
+
+
 def build_model(args, num_classes):
+    if args.mode == "sd_textual_inversion":
+        return nn.Identity()
+
+    # Stable Diffusion Full UNet fine-tuning
+    if args.mode == "sd_full":
+        model = UNet2DConditionModel.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="unet",
+        )
+
+        # Full fine-tuning：训练 UNet 全部参数
+        model.train()
+
+        if getattr(args, "sd_enable_gradient_checkpointing", True):
+            model.enable_gradient_checkpointing()
+
+        if getattr(args, "sd_enable_xformers", False):
+            model.enable_xformers_memory_efficient_attention()
+
+        return model
+
     # ldm_ae 模式
     if args.mode == "ldm_ae":
         model = AutoencoderKL(
@@ -46,7 +143,6 @@ def build_model(args, num_classes):
     # num_class_embeds 控制类别嵌入表大小
     # unconditional 时传 None
     num_class_embeds = None
-
     if args.use_class_conditioning:
         if args.mode == "cfg":
             # CFG 会额外预留 1 个“空条件类别”（null class）
@@ -56,10 +152,46 @@ def build_model(args, num_classes):
             num_class_embeds = num_classes
 
     if args.mode == "latent_ddpm":
-        # latent_ddpm 模式下，UNet 的输入输出通道数应该和 AE 的 latent_channels 一致
+        # latent_ddpm 模式下，UNet 的输入输出通道数应该和 AE 的 latent_channels 一致。
         in_out_channels = args.ae_latent_channels
+        latent_sample_size = args.resolution // args.ae_downsample_factor
+
+        # 方式1：cross-attention 类别条件注入
+        if args.use_cross_attention_conditioning:
+            unet = UNet2DConditionModel(
+                sample_size=latent_sample_size,
+                in_channels=in_out_channels,
+                out_channels=in_out_channels,
+                layers_per_block=2,
+                block_out_channels=(128, 256, 256, 512),
+                down_block_types=(
+                    "DownBlock2D",
+                    "CrossAttnDownBlock2D",
+                    "CrossAttnDownBlock2D",
+                    "DownBlock2D",
+                ),
+                up_block_types=(
+                    "UpBlock2D",
+                    "CrossAttnUpBlock2D",
+                    "CrossAttnUpBlock2D",
+                    "UpBlock2D",
+                ),
+                mid_block_type="UNetMidBlock2DCrossAttn",
+                cross_attention_dim=args.cross_attention_dim,
+                attention_head_dim=args.attention_head_dim,
+                num_class_embeds=None,
+                resnet_time_scale_shift=args.resnet_time_scale_shift,
+            )
+
+            return ClassConditionedUNet2DConditionModel(
+                unet=unet,
+                num_classes=num_classes,
+                cross_attention_dim=args.cross_attention_dim,
+            )
+
+        # 方式2：保持原来的类别条件注入方式
         return UNet2DModel(
-            sample_size=args.resolution // args.ae_downsample_factor,
+            sample_size=latent_sample_size,
             in_channels=in_out_channels,
             out_channels=in_out_channels,
             layers_per_block=2,
@@ -135,6 +267,12 @@ def build_model(args, num_classes):
 
 
 def build_noise_scheduler(args):
+    # Stable Diffusion full fine-tuning 使用预训练模型自带 scheduler 配置
+    if args.mode == "sd_full":
+        from .modes.sd_full import build_sd_full_noise_scheduler
+
+        return build_sd_full_noise_scheduler(args)
+
     # ldm_ae 不需要 diffusion noise scheduler
     if args.mode == "ldm_ae":
         return None

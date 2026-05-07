@@ -96,11 +96,9 @@ def save_training_checkpoint(
     unwrapped_model = accelerator.unwrap_model(model)
 
     state = {
-        # 当前已经完成的 epoch 数。
         "epoch": int(epoch),
-        # 全局优化步数，用于 TensorBoard / 日志 / 继续记录。
         "global_step": int(global_step),
-        # 保存 unwrap 后的模型权重，避免保存 Accelerator / DDP 包装层。
+        # 保存 unwrap 后的模型权重
         "model_state_dict": unwrapped_model.state_dict(),
         # 保存优化器状态，恢复后动量、二阶矩等不会丢。
         "optimizer_state_dict": (
@@ -110,7 +108,6 @@ def save_training_checkpoint(
         "lr_scheduler_state_dict": (
             lr_scheduler.state_dict() if lr_scheduler is not None else None
         ),
-        # 当前最佳指标。
         "best_metric": best_metric,
         # 保存完整命令行参数。
         "args": vars(args),

@@ -1,0 +1,126 @@
+{
+    "experiment_name": "260503-2244_resnet50_diff-ldm",
+    "experiment_dir": "experiments\\260503-2244_resnet50_diff-ldm",
+    "created_time": "2026-05-03 22:48:22",
+    "model_name": "resnet50",
+    "weights": "DEFAULT",
+    "learning_rate": 0.03,
+    "momentum": 0.9,
+    "weight_decay": 0.0001,
+    "batch_size": 128,
+    "epochs": 80,
+    "seed": 42,
+    "device": "cuda:0",
+    "data": {
+        "train_gt_csv_path": "dataset/ISIC2018_Task3_Training_GroundTruth.csv",
+        "val_gt_csv_path": "dataset/ISIC2018_Task3_Validation_GroundTruth.csv",
+        "train_img_dir": "dataset/ISIC2018_Task3_Training_Input",
+        "val_img_dir": "dataset/ISIC2018_Task3_Validation_Input",
+        "train_dataset_size": 10015,
+        "val_dataset_size": 193,
+        "synthetic_dataset_size": 1105,
+        "augmented_train_dataset_size": 11120,
+        "split_ratio": "official train / official val",
+        "num_classes": 7,
+        "class_names": [
+            "MEL",
+            "NV",
+            "BCC",
+            "AKIEC",
+            "BKL",
+            "DF",
+            "VASC"
+        ],
+        "class_distribution": {
+            "train_dataset": {
+                "MEL": "1113 (11.11%)",
+                "NV": "6705 (66.95%)",
+                "BCC": "514 (5.13%)",
+                "AKIEC": "327 (3.27%)",
+                "BKL": "1099 (10.97%)",
+                "DF": "115 (1.15%)",
+                "VASC": "142 (1.42%)",
+                "Total": "10015 (100.00%)"
+            },
+            "val_dataset": {
+                "MEL": "21 (10.88%)",
+                "NV": "123 (63.73%)",
+                "BCC": "15 (7.77%)",
+                "AKIEC": "8 (4.15%)",
+                "BKL": "22 (11.40%)",
+                "DF": "1 (0.52%)",
+                "VASC": "3 (1.55%)",
+                "Total": "193 (100.00%)"
+            },
+            "synthetic_dataset": {
+                "MEL": "556 (50.32%)",
+                "NV": "0 (0.00%)",
+                "BCC": "0 (0.00%)",
+                "AKIEC": "0 (0.00%)",
+                "BKL": "549 (49.68%)",
+                "DF": "0 (0.00%)",
+                "VASC": "0 (0.00%)",
+                "Total": "1105 (100.00%)"
+            },
+            "augmented_train_dataset": {
+                "MEL": "1669 (15.01%)",
+                "NV": "6705 (60.30%)",
+                "BCC": "514 (4.62%)",
+                "AKIEC": "327 (2.94%)",
+                "BKL": "1648 (14.82%)",
+                "DF": "115 (1.03%)",
+                "VASC": "142 (1.28%)",
+                "Total": "11120 (100.00%)"
+            }
+        }
+    },
+    "diffusion_augmentation": {
+        "enabled": true,
+        "mode": "latent_ddpm",
+        "use_class_conditioning": true,
+        "use_ddim_sampling": true,
+        "ddim_eta": 0.0,
+        "resolution": 256,
+        "ddpm_num_steps": 1000,
+        "ddpm_num_inference_steps": 100,
+        "ddpm_beta_schedule": "squaredcos_cap_v2",
+        "diffusion_checkpoint": "experiments\\260503-1453_res256_latent_ddpm_cond_all_z4_down8_seed42\\checkpoints\\last.pth.tar",
+        "ratios_raw": [
+            "0:0.5",
+            "4:0.5"
+        ],
+        "active_ratios_by_class_name": {
+            "MEL": 0.5,
+            "BKL": 0.5
+        },
+        "aug_output_dir": "experiments\\260503-2244_resnet50_diff-ldm\\train_augmented_data",
+        "mode_specific_params": {}
+    },
+    "paths": {
+        "metrics_csv": "experiments\\260503-2244_resnet50_diff-ldm\\metrics\\epoch_metrics.csv",
+        "metrics_json": "experiments\\260503-2244_resnet50_diff-ldm\\metrics\\epoch_metrics.json",
+        "metadata_json": "experiments\\260503-2244_resnet50_diff-ldm\\metadata\\experiment_metadata.json",
+        "last_checkpoint": "experiments\\260503-2244_resnet50_diff-ldm\\checkpoints\\last.pth.tar",
+        "best_checkpoint": "experiments\\260503-2244_resnet50_diff-ldm\\checkpoints\\model_best.pth.tar",
+        "roc_dir": "experiments\\260503-2244_resnet50_diff-ldm\\roc_curves",
+        "confusion_matrix_dir": "experiments\\260503-2244_resnet50_diff-ldm\\confusion_matrices",
+        "predictions_dir": "experiments\\260503-2244_resnet50_diff-ldm\\predictions"
+    },
+    "resume": {
+        "resume_path": null,
+        "start_epoch": 0
+    },
+    "early_stopping": {
+        "patience": 0,
+        "min_delta": 0.0,
+        "monitor": "val_balanced_acc",
+        "mode": "max",
+        "counter": 0,
+        "stopped_early": false
+    },
+    "best_result": {
+        "best_epoch": -1,
+        "best_val_balanced_acc": 0.0,
+        "best_model_path": ""
+    }
+}

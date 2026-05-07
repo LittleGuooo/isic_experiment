@@ -105,5 +105,5 @@ diffusion.py变成条件扩散模型
 ## version 2.11
 加入了LDM的实现
 
-## version 2.12
+## version 2.14
 实现了LDM的cross-attention机制

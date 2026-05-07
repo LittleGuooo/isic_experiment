@@ -37,12 +37,25 @@ def parse_args():
     # ============================================================
 
     # =========================
-    # val-only
+    # Stable Diffusion Full Fine-tuning
     # =========================
     parser.add_argument(
-        "--evaluate",
+        "--pretrained_model_name_or_path",
+        type=str,
+        default="C:/Users/Admin/.cache/huggingface/hub/models--nota-ai--bk-sdm-small/snapshots/572238db7ed3a10858900803f3fc8cca53e893e0",
+        # default="C:/Users/Admin/.cache/huggingface/hub/models--stable-diffusion-v1-5--stable-diffusion-v1-5/snapshots/451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+        help="Stable Diffusion 预训练模型名称或本地路径，仅 mode=sd_full 时使用。",
+    )
+    parser.add_argument(
+        "--sd_enable_gradient_checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="sd_full 模式下是否开启 UNet gradient checkpointing。默认开启以降低显存。",
+    )
+    parser.add_argument(
+        "--sd_enable_xformers",
         action="store_true",
-        help="只在验证集上做评估，不进入正常训练循环；需要配合 --resume 使用。",
+        help="sd_full 模式下是否开启 xFormers memory efficient attention。需要你本地已正确安装 xformers。",
     )
 
     # =========================
@@ -249,7 +262,7 @@ def parse_args():
     parser.add_argument(
         "--mode",
         default="ddpm",
-        choices=["ddpm", "cfg", "cg", "latent_ddpm"],
+        choices=["ddpm", "cfg", "cg", "latent_ddpm", "sd_full"],
         help="扩散增强使用的模式：ddpm / cfg / cg / latent_ddpm。",
     )
     parser.add_argument(
@@ -301,8 +314,13 @@ def parse_args():
     parser.add_argument(
         "--resnet_time_scale_shift",
         choices=["default", "scale_shift"],
-        default="default",
+        default="scale_shift",
         help="扩散 UNet 中 time embedding 的 scale shift 方式。",
+    )
+    parser.add_argument(
+        "--use_weighted_sampler",
+        action="store_true",
+        help="训练扩散模型时是否启用 WeightedRandomSampler，以提高少数类被采样的概率。",
     )
 
     # ============================================================
@@ -378,6 +396,30 @@ def parse_args():
     # ============================================================
     # 10) latent_ddpm / AutoencoderKL 相关参数
     # ============================================================
+
+    # LDM Cross-Attention 条件注入
+    parser.add_argument(
+        "--use_cross_attention_conditioning",
+        action="store_true",
+        help=(
+            "开启 latent_ddpm 的 cross-attention 类别条件注入方式。"
+            "当前最小实现为 class label -> nn.Embedding -> encoder_hidden_states。"
+            "不能与 --use_class_conditioning 同时开启。"
+        ),
+    )
+    parser.add_argument(
+        "--cross_attention_dim",
+        type=int,
+        default=256,
+        help="cross-attention 条件 token 的特征维度，即 encoder_hidden_states 最后一维。",
+    )
+
+    parser.add_argument(
+        "--attention_head_dim",
+        type=int,
+        default=8,
+        help="UNet2DConditionModel 中 attention head 的维度。",
+    )
     parser.add_argument(
         "--autoencoder_ckpt_path",
         type=str,
@@ -537,7 +579,7 @@ def main():
         [
             # 随机裁剪到 224x224，提高模型对尺度和局部区域变化的鲁棒性
             transforms.RandomResizedCrop(
-                size=224,
+                size=args.resolution,
                 scale=(0.8, 1.0),
                 ratio=(0.9, 1.1),
             ),
@@ -563,7 +605,7 @@ def main():
 
     classifier_eval_transforms = transforms.Compose(
         [
-            transforms.Resize((224, 224)),
+            transforms.Resize((args.resolution, args.resolution)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -573,14 +615,11 @@ def main():
     )
 
     # 从训练集 CSV 里读取类别名
-    # 这样可以保证 train / val / test 的类别顺序一致
     gt_df = pd.read_csv(args.train_gt_csv)
     class_names = [c for c in gt_df.columns if c != "image"]
     num_classes = len(class_names)
 
-    # =========================
     # 测试模式 test-only
-    # =========================
     if args.test_only:
         if args.test_gt_csv is None:
             raise ValueError("启用 --test-only 时，必须提供 --test-gt-csv。")
@@ -612,9 +651,7 @@ def main():
         args.val_gt_csv, args.val_img_dir, classifier_eval_transforms
     )
 
-    # =========================
     # 进入训练主流程
-    # =========================
     run_training(
         args=args,
         train_dataset=train_dataset,

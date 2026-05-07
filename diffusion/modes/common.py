@@ -3,6 +3,8 @@ from .ddpm import build_ddpm
 from .cfg import build_cfg
 from .cg import build_cg
 from .ldm import build_latent_ddpm
+from .sd_full import build_sd_full
+from .sd_textual_inversion import build_sd_textual_inversion
 
 
 def get_modes(args):
@@ -19,5 +21,9 @@ def get_modes(args):
         return build_ldm_ae(args)
     if args.mode == "latent_ddpm":
         return build_latent_ddpm(args)
+    if mode == "sd_full":
+        return build_sd_full(args)
+    if mode == "sd_textual_inversion":
+        return build_sd_textual_inversion(args)
 
     raise ValueError(f"Unsupported mode: {mode}")

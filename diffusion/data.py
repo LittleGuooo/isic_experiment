@@ -3,9 +3,9 @@ import os
 import numpy as np
 import pandas as pd
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
-
+import torch
 from .utils import count_labels_from_indices
 
 
@@ -191,23 +191,55 @@ def build_datasets_and_loaders(args):
     except Exception:
         pass
 
+    def _build_weighted_sampler(dataset):
+        """
+        为扩散模型训练构造 WeightedRandomSampler。
+
+        核心思路：
+            1. 统计每个类别在训练集中的样本数；
+            2. 每个样本的采样权重 = 1 / 该样本所属类别的样本数；
+            3. 少数类样本权重大，多数类样本权重小；
+            4. replacement=True 表示允许重复采样少数类样本。
+
+        注意：
+            这个 sampler 只用于 train_dataloader；
+            eval loader 不应该用 weighted sampler。
+        """
+        labels = np.asarray(dataset.labels, dtype=np.int64)
+
+        # 统计每个类别出现次数
+        class_counts = np.bincount(labels, minlength=num_classes)
+
+        # 避免除以 0：如果某个类别被过滤掉，count 为 0，则权重设为 0
+        class_weights = np.zeros_like(class_counts, dtype=np.float64)
+        nonzero_mask = class_counts > 0
+        class_weights[nonzero_mask] = 1.0 / class_counts[nonzero_mask]
+
+        # 给每个样本分配权重
+        sample_weights = class_weights[labels]
+
+        sample_weights = torch.as_tensor(sample_weights, dtype=torch.double)
+
+        sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(sample_weights),
+            replacement=True,
+        )
+
+        return sampler
+
     def _make_loader(
         dataset,
         batch_size,
         shuffle,
         drop_last,
+        sampler=None,
     ):
-        """
-        统一创建 DataLoader。
-
-        注意：
-        prefetch_factor 和 persistent_workers 只在 num_workers > 0 时使用。
-        当 num_workers=0 时，PyTorch 使用单进程加载数据，不应该显式传 prefetch_factor。
-        """
         loader_kwargs = {
             "dataset": dataset,
             "batch_size": batch_size,
-            "shuffle": shuffle,
+            "shuffle": False if sampler is not None else shuffle,
+            "sampler": sampler,
             "num_workers": args.dataloader_num_workers,
             "pin_memory": pin_memory,
             "drop_last": drop_last,
@@ -219,12 +251,17 @@ def build_datasets_and_loaders(args):
 
         return DataLoader(**loader_kwargs)
 
-    # 训练 DataLoader：训练需要 shuffle=True，drop_last=True
+    # 带权重的采样器
+    train_sampler = None
+    if getattr(args, "use_weighted_sampler", False):
+        train_sampler = _build_weighted_sampler(train_dataset)
+
     train_dataloader = _make_loader(
         dataset=train_dataset,
         batch_size=args.train_batch_size,
         shuffle=True,
         drop_last=True,
+        sampler=train_sampler,
     )
 
     # train_eval_loader：用于训练集评估

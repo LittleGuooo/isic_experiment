@@ -33,7 +33,6 @@ from .metrics import (
     update_epoch_metrics_json,
 )
 
-
 # 全局变量：记录历史最佳 balanced accuracy
 best_balanced_acc = 0.0
 
@@ -41,7 +40,7 @@ best_balanced_acc = 0.0
 def make_experiment_name(args):
     """
     构造简洁实验名：
-    日期时间 + 分类器骨架 + 真实增强状态。
+    日期时间 + 分类器骨架 + 真实增强状态 + 学习率。
     """
     timestamp = datetime.now().strftime("%y%m%d-%H%M")
 
@@ -52,13 +51,15 @@ def make_experiment_name(args):
         "latent_ddpm": "ldm",
     }
 
-    if args.use_diffusion_augmentation:
+    if args.use_diffusion_augmentation or args.mode == "sd_full":
         mode_tag = mode_name_map.get(args.mode, args.mode)
         aug_tag = f"diff-{mode_tag}"
     else:
         aug_tag = "noaug"
 
-    return f"{timestamp}_{args.arch}_{aug_tag}"
+    lr = f"lr_{args.lr}"
+
+    return f"{timestamp}_{args.arch}_{aug_tag}_{lr}"
 
 
 def setup_experiment_folders(base_dir, exp_name):
@@ -416,8 +417,7 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
     支持：
     1. 从头训练
     2. resume 继续训练
-    3. 只做 evaluate
-    4. 可选扩散数据增强（Diffusion Augmentation）
+    3. 可选扩散数据增强（Diffusion Augmentation）
     """
     global best_balanced_acc
 
@@ -427,9 +427,7 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
     early_stopped = False
     checkpoint = None
 
-    # =========================
-    # 处理 resume
-    # =========================
+    # 重新加载checkpoint/创建或复用实验文件夹
     if args.resume is not None and os.path.isfile(args.resume):
         checkpoint = torch.load(args.resume, map_location=device)
 
@@ -454,18 +452,14 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
     )
     best_model_path = os.path.join(exp_folders["checkpoints_dir"], "model_best.pth.tar")
 
-    # =========================
     # 构建分类模型
-    # =========================
     model = build_classifier(
         args=args,
         num_classes=num_classes,
         device=device,
     )
 
-    # =========================
     # 优化器、学习率调度器、AMP scaler
-    # =========================
     optimizer = torch.optim.SGD(
         model.parameters(),
         lr=args.lr,
@@ -520,86 +514,7 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
         "Validation Dataset Class Distribution", val_class_distribution
     )
 
-    # =========================
-    # evaluate 模式
-    # =========================
-    if args.evaluate:
-        criterion = nn.CrossEntropyLoss(
-            label_smoothing=args.label_smoothing,
-        ).to(device)
-
-        pin_memory = device.type == "cuda"
-        persistent_workers = args.workers > 0
-
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-            prefetch_factor=2 if persistent_workers else None,
-        )
-
-        eval_epoch = start_epoch if checkpoint is not None else 0
-
-        val_metrics = validate(
-            val_loader=val_loader,
-            model=model,
-            criterion=criterion,
-            device=device,
-            num_classes=num_classes,
-            class_names=class_names,
-            epoch=eval_epoch,
-            roc_dir=exp_folders["roc_dir"],
-            cm_dir=exp_folders["cm_dir"],
-            predictions_dir=exp_folders["predictions_dir"],
-            metrics_dir=exp_folders["metrics_dir"],
-        )
-
-        eval_row = {
-            "epoch": eval_epoch,
-            "lr": float(optimizer.param_groups[0]["lr"]),
-            "train_loss": None,
-            "train_acc": None,
-            "val_loss": float(val_metrics["val_loss"]),
-            "val_acc": float(val_metrics["overall"]["accuracy"]),
-            "val_balanced_acc": float(
-                val_metrics["overall"]["balanced_multiclass_accuracy"]
-            ),
-            "val_macro_recall": float(val_metrics["overall"]["macro_recall"]),
-            "val_macro_f1": float(val_metrics["overall"]["macro_f1"]),
-            "val_macro_precision": float(val_metrics["overall"]["macro_precision"]),
-            "val_auc_macro_ovr": float(
-                val_metrics["overall"]["multiclass_macro_auc_ovr"]
-            ),
-            "val_mean_auc_all_diagnoses": float(
-                val_metrics["overall"]["mean_auc_all_diagnoses"]
-            ),
-            "val_mean_ap_all_diagnoses": float(
-                val_metrics["overall"]["mean_average_precision_all_diagnoses"]
-            ),
-            "val_mean_sensitivity": float(val_metrics["overall"]["mean_sensitivity"]),
-            "val_mean_specificity": float(val_metrics["overall"]["mean_specificity"]),
-            "val_mean_ppv": float(val_metrics["overall"]["mean_ppv"]),
-            "val_mean_npv": float(val_metrics["overall"]["mean_npv"]),
-            "val_melanoma_auc80": float(val_metrics["overall"]["melanoma_auc80"]),
-            "val_malignant_vs_benign_auc": float(
-                val_metrics["overall"]["malignant_vs_benign_auc"]
-            ),
-            "roc_curve_path": val_metrics["roc_curve_path"],
-            "confusion_matrix_path": val_metrics["confusion_matrix_png_path"],
-            "val_predictions_path": val_metrics["val_predictions_csv_path"],
-            "detailed_metrics_path": val_metrics["detailed_metrics_json_path"],
-        }
-
-        update_epoch_metrics_csv(metrics_csv_path, eval_row)
-        update_epoch_metrics_json(metrics_json_path, eval_row)
-        return
-
-    # =========================
     # 增强数据集，并构建最终训练集
-    # =========================
     aug_output_dir = resolve_aug_output_dir(
         args=args,
         checkpoint=checkpoint,
@@ -613,6 +528,7 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
         device=device,
         output_dir=aug_output_dir,
     )
+
     # 注意：criterion 必须在 final_train_dataset 构建完成后再创建。
     # 因为如果启用了扩散增强，类别分布已经改变。
     criterion = build_criterion(
@@ -647,9 +563,7 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
     pin_memory = device.type == "cuda"
     persistent_workers = args.workers > 0
 
-    # =========================
     # DataLoader
-    # =========================
     train_loader = DataLoader(
         final_train_dataset,
         batch_size=args.batch_size,
@@ -782,9 +696,7 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
             use_amp=(device.type == "cuda" and args.use_amp),
         )
 
-        # ==========================
         # 做验证的epoch
-        # ==========================
         do_eval = ((epoch + 1) % args.eval_freq == 0) or ((epoch + 1) == args.epochs)
         val_metrics = None
         is_best = False
@@ -892,6 +804,11 @@ def run_training(args, train_dataset, val_dataset, class_names, num_classes, dev
                 "val_macro_recall": float(val_metrics["overall"]["macro_recall"]),
                 "val_macro_f1": float(val_metrics["overall"]["macro_f1"]),
                 "val_macro_precision": float(val_metrics["overall"]["macro_precision"]),
+                "val_mcc": float(val_metrics["overall"]["mcc"]),
+                "val_cohen_kappa": float(val_metrics["overall"]["cohen_kappa"]),
+                "val_mean_youden_index": float(
+                    val_metrics["overall"]["mean_youden_index"]
+                ),
                 "val_auc_macro_ovr": float(
                     val_metrics["overall"]["multiclass_macro_auc_ovr"]
                 ),
@@ -1089,9 +1006,7 @@ def run_test(args, test_dataset, class_names, num_classes, device):
     }
     save_json(experiment_metadata, metadata_json_path)
 
-    # =========================
     # 直接复用 validate 做一次完整测试
-    # =========================
     test_metrics = validate(
         val_loader=test_loader,
         model=model,
@@ -1116,6 +1031,9 @@ def run_test(args, test_dataset, class_names, num_classes, device):
         "test_macro_recall": float(test_metrics["overall"]["macro_recall"]),
         "test_macro_f1": float(test_metrics["overall"]["macro_f1"]),
         "test_macro_precision": float(test_metrics["overall"]["macro_precision"]),
+        "test_mcc": float(test_metrics["overall"]["mcc"]),
+        "test_cohen_kappa": float(test_metrics["overall"]["cohen_kappa"]),
+        "test_mean_youden_index": float(test_metrics["overall"]["mean_youden_index"]),
         "test_auc_macro_ovr": float(
             test_metrics["overall"]["multiclass_macro_auc_ovr"]
         ),
@@ -1154,6 +1072,12 @@ def run_test(args, test_dataset, class_names, num_classes, device):
         f"test_macro_precision      : {test_metrics['overall']['macro_precision']:.4f}"
     )
     print(f"test_macro_f1             : {test_metrics['overall']['macro_f1']:.4f}")
+    print(f"test_mcc                  : {test_metrics['overall']['mcc']:.4f}")
+    print(f"test_cohen_kappa          : {test_metrics['overall']['cohen_kappa']:.4f}")
+    print(
+        f"test_mean_youden_index    : "
+        f"{test_metrics['overall']['mean_youden_index']:.4f}"
+    )
     print(
         f"test_auc_macro_ovr        : "
         f"{test_metrics['overall']['multiclass_macro_auc_ovr']:.4f}"

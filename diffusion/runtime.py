@@ -17,7 +17,6 @@ from .runtime_engine.classifier_training import (
 )
 from .runtime_engine.checkpointing import load_training_checkpoint
 from .runtime_engine.train_loop import run_diffusion_training_loop
-from .runtime_engine.inference import run_inference_only
 
 
 def run_train(args):
@@ -59,6 +58,7 @@ def run_train(args):
     class_names = data_bundle["class_names"]
     train_class_distribution = data_bundle["train_class_distribution"]
     val_class_distribution = data_bundle["val_class_distribution"]
+
     # classifier 的训练复用 val_eval_loader
     val_dataloader = data_bundle["val_eval_loader"]
     num_classes = len(class_names)
@@ -107,13 +107,28 @@ def run_train(args):
 
         ema_model.eval()
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.learning_rate,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.adam_weight_decay,
-        eps=args.adam_epsilon,
+    extra_components = modes["build_extra_components"](
+        num_classes=num_classes,
+        device=accelerator.device,
     )
+
+    # 优化器
+    if args.mode == "sd_textual_inversion":
+        optimizer = torch.optim.AdamW(
+            extra_components["text_encoder"].get_input_embeddings().parameters(),
+            lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
 
     num_update_steps_per_epoch = (
         len(train_dataloader) + args.gradient_accumulation_steps - 1
@@ -125,11 +140,6 @@ def run_train(args):
         optimizer=optimizer,
         num_warmup_steps=args.lr_warmup_steps,
         num_training_steps=max_train_steps,
-    )
-
-    extra_components = modes["build_extra_components"](
-        num_classes=num_classes,
-        device=accelerator.device,
     )
 
     model, optimizer, train_dataloader, val_dataloader, lr_scheduler = (
@@ -168,21 +178,6 @@ def run_train(args):
         extra_components=extra_components,
     )
 
-    # 仅推理模式
-    if args.run_mode == "infer_only":
-        run_inference_only(
-            args=args,
-            accelerator=accelerator,
-            model=model,
-            noise_scheduler=noise_scheduler,
-            class_names=class_names,
-            modes=modes,
-            extra_components=extra_components,
-            output_dir=exp_folders["samples_dir"],
-        )
-        accelerator.end_training()
-        return
-
     run_diffusion_training_loop(
         args=args,
         accelerator=accelerator,
@@ -211,7 +206,7 @@ def run_train(args):
             {
                 # 当前运行模式，例如 ldm_ae / latent_ddpm / ddpm / cfg / cg
                 "mode": args.mode,
-                # 当前运行类型，例如 train / infer_only
+                # 当前运行类型
                 "run_mode": args.run_mode,
                 # 实验目录，方便之后定位输出文件
                 "exp_dir": exp_folders["exp_dir"],

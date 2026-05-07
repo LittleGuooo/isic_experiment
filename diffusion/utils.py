@@ -51,7 +51,14 @@ def make_experiment_name(args):
     res_tag = f"res{args.resolution}"
 
     # 类别条件信息
-    cond_tag = "cond" if args.use_class_conditioning else "uncond"
+    if args.use_class_conditioning:
+        cond_tag = "cond"
+    elif args.use_cross_attention_conditioning:
+        cond_tag = "cross_att"
+    elif args.mode == "sd_full":
+        cond_tag = ""
+    else:
+        cond_tag = "uncond"
 
     # 数据模式信息
     if args.data_mode == "single_label":

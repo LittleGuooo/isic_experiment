@@ -109,7 +109,6 @@ def _decode_from_scaled_latents(vae, scaled_latents):
 
 
 def build_latent_ddpm(args):
-
     def build_extra_components(num_classes, device):
         vae = _load_frozen_autoencoder(args, device=device)
 
@@ -128,10 +127,12 @@ def build_latent_ddpm(args):
         }
         return extra
 
-    def prepare_batch_labels(batch, device):
         # 只有开启类别条件时才返回标签
-        if args.use_class_conditioning:
+
+    def prepare_batch_labels(batch, device):
+        if args.use_class_conditioning or args.use_cross_attention_conditioning:
             return batch["label"].to(device).long()
+
         return None
 
     def train_step(model, noise_scheduler, batch, accelerator, extra_components):
@@ -169,9 +170,12 @@ def build_latent_ddpm(args):
         noisy_latents = noise_scheduler.add_noise(scaled_latents, noise, timesteps)
 
         class_labels = prepare_batch_labels(batch, scaled_latents.device)
-        if args.use_class_conditioning and class_labels is not None:
+
+        if args.use_class_conditioning or args.use_cross_attention_conditioning:
             noise_pred = model(
-                noisy_latents, timesteps, class_labels=class_labels
+                noisy_latents,
+                timesteps,
+                class_labels=class_labels,
             ).sample
         else:
             noise_pred = model(noisy_latents, timesteps).sample
@@ -203,43 +207,84 @@ def build_latent_ddpm(args):
         **kwargs,
     ):
         """
-        第二阶段采样流程：
-            Gaussian noise in latent space
-            -> denoise in latent space
-            -> decode by frozen VAE
+        latent_ddpm 采样流程：
+
+            1. 从 latent space 的高斯噪声开始；
+            2. UNet 在每个 timestep 预测噪声；
+            3. scheduler.step(...) 把 z_t 更新为 z_{t-1}；
+            4. 最后用冻结的 AutoencoderKL decode 回图像空间。
+
+        说明：
+            - use_cross_attention_conditioning=True 时，class_labels 会传给
+              ClassConditionedUNet2DConditionModel；
+            - wrapper 内部会把 class_labels 转成 encoder_hidden_states；
+            - model(...).sample 仍然成立，因为 wrapper 返回的是内部
+              UNet2DConditionModel 的输出对象。
         """
         vae = extra_components["vae"]
         latent_channels = extra_components["latent_channels"]
         latent_resolution = extra_components["latent_resolution"]
 
-        # latent diffusion 的初始噪声形状
+        # 初始化 latent-space 高斯噪声
         latents = torch.randn(
             (batch_size, latent_channels, latent_resolution, latent_resolution),
             generator=generator,
             device=device,
-            dtype=model.dtype,
+            dtype=next(model.parameters()).dtype,
         )
 
-        sampling_scheduler.set_timesteps(num_inference_steps)
+        if class_labels is not None:
+            class_labels = class_labels.to(device).long()
 
+        # 设置采样 timesteps
+        sampling_scheduler.set_timesteps(num_inference_steps, device=device)
+
+        # 逐步去噪：z_T -> z_0
         for t in sampling_scheduler.timesteps:
-            if args.use_class_conditioning and class_labels is not None:
-                noise_pred = model(latents, t, class_labels=class_labels).sample
+            # 某些 scheduler 需要对模型输入做缩放；
+            # DDPM / DDIM 下通常等价于原输入，但保留这一行更符合 diffusers 通用写法。
+            model_input = sampling_scheduler.scale_model_input(latents, t)
+
+            if class_labels is not None:
+                noise_pred = model(
+                    model_input,
+                    t,
+                    class_labels=class_labels,
+                ).sample
             else:
-                noise_pred = model(latents, t).sample
+                noise_pred = model(
+                    model_input,
+                    t,
+                ).sample
 
-            latents = sampling_scheduler.step(
-                noise_pred,
-                t,
-                latents,
-            ).prev_sample
+            scheduler_name = sampling_scheduler.__class__.__name__
+            if scheduler_name == "DDIMScheduler":
+                step_output = sampling_scheduler.step(
+                    model_output=noise_pred,
+                    timestep=t,
+                    sample=latents,
+                    eta=float(getattr(args, "ddim_eta", 0.0)),
+                    generator=generator,
+                )
+            else:
+                step_output = sampling_scheduler.step(
+                    model_output=noise_pred,
+                    timestep=t,
+                    sample=latents,
+                    generator=generator,
+                )
+            latents = step_output.prev_sample
 
-        # latent -> image
         images = _decode_from_scaled_latents(vae, latents)
         images = images.clamp(-1.0, 1.0)
 
+        # latents 后面不再需要，尽早释放引用
+        del latents
+
         if return_pil_safe_uint8:
-            return _tensor_to_uint8(images)
+            images_uint8 = _tensor_to_uint8(images)
+            del images
+            return images_uint8
 
         return images
 
