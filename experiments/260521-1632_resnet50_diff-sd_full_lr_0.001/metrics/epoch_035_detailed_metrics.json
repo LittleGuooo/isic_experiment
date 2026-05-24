@@ -1,0 +1,115 @@
+{
+    "overall": {
+        "accuracy": 87.56476683937824,
+        "balanced_multiclass_accuracy": 0.8725556963361841,
+        "macro_recall": 0.8725556963361841,
+        "macro_precision": 0.748105230792882,
+        "macro_f1": 0.7821913434697929,
+        "multiclass_macro_auc_ovr": 0.9746934779954985,
+        "mean_auc_all_diagnoses": 0.9746934779954985,
+        "mean_average_precision_all_diagnoses": 0.8655334926152772,
+        "mean_sensitivity": 0.8725556963361841,
+        "mean_specificity": 0.9757501129226636,
+        "mean_accuracy": 0.9644707623982235,
+        "mean_f1": 0.7821913434697929,
+        "mean_ppv": 0.748105230792882,
+        "mean_npv": 0.9705578654346007,
+        "melanoma_auc80": 0.9258028792912514,
+        "malignant_vs_benign_auc": 0.946613788895668,
+        "mcc": 0.7861107705278152,
+        "cohen_kappa": 0.784588196995768,
+        "mean_youden_index": 0.8483058092588477
+    },
+    "per_class": {
+        "MEL": {
+            "sensitivity": 0.6666666666666666,
+            "specificity": 0.9767441860465116,
+            "accuracy": 0.9430051813471503,
+            "auc": 0.9681616832779623,
+            "average_precision": 0.8093404108054705,
+            "f1_score": 0.717948717948718,
+            "ppv": 0.7777777777777778,
+            "npv": 0.96,
+            "auc80": 0.9258028792912514,
+            "youden_index": 0.6434108527131781
+        },
+        "NV": {
+            "sensitivity": 0.926829268292683,
+            "specificity": 0.9428571428571428,
+            "accuracy": 0.9326424870466321,
+            "auc": 0.9780487804878049,
+            "average_precision": 0.9892521969971964,
+            "f1_score": 0.946058091286307,
+            "ppv": 0.9661016949152542,
+            "npv": 0.88,
+            "auc80": NaN,
+            "youden_index": 0.8696864111498259
+        },
+        "BCC": {
+            "sensitivity": 0.8666666666666667,
+            "specificity": 0.9606741573033708,
+            "accuracy": 0.9533678756476683,
+            "auc": 0.9823970037453184,
+            "average_precision": 0.7647508242245085,
+            "f1_score": 0.7428571428571429,
+            "ppv": 0.65,
+            "npv": 0.9884393063583815,
+            "auc80": NaN,
+            "youden_index": 0.8273408239700375
+        },
+        "AKIEC": {
+            "sensitivity": 0.875,
+            "specificity": 0.9837837837837838,
+            "accuracy": 0.9792746113989638,
+            "auc": 0.9702702702702702,
+            "average_precision": 0.6947916666666667,
+            "f1_score": 0.7777777777777777,
+            "ppv": 0.7,
+            "npv": 0.994535519125683,
+            "auc80": NaN,
+            "youden_index": 0.858783783783784
+        },
+        "BKL": {
+            "sensitivity": 0.7727272727272727,
+            "specificity": 0.9766081871345029,
+            "accuracy": 0.9533678756476683,
+            "auc": 0.9239766081871345,
+            "average_precision": 0.8005993496130984,
+            "f1_score": 0.7906976744186046,
+            "ppv": 0.8095238095238095,
+            "npv": 0.9709302325581395,
+            "auc80": NaN,
+            "youden_index": 0.7493354598617756
+        },
+        "DF": {
+            "sensitivity": 1.0,
+            "specificity": 0.9895833333333334,
+            "accuracy": 0.9896373056994818,
+            "auc": 1.0,
+            "average_precision": 1.0,
+            "f1_score": 0.5,
+            "ppv": 0.3333333333333333,
+            "npv": 1.0,
+            "auc80": NaN,
+            "youden_index": 0.9895833333333335
+        },
+        "VASC": {
+            "sensitivity": 1.0,
+            "specificity": 1.0,
+            "accuracy": 1.0,
+            "auc": 1.0,
+            "average_precision": 1.0,
+            "f1_score": 1.0,
+            "ppv": 1.0,
+            "npv": 1.0,
+            "auc80": NaN,
+            "youden_index": 1.0
+        }
+    },
+    "malignant_definition_used": [
+        "MEL",
+        "BCC",
+        "AKIEC"
+    ],
+    "val_loss": 1.0075636113863535
+}

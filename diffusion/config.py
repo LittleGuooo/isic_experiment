@@ -8,6 +8,42 @@ def parse_args():
     )
 
     # =========================
+    # Stable Diffusion LoRA Fine-tuning
+    # =========================
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=16,
+        help="LoRA rank。越大可训练容量越强，但显存和过拟合风险也更高。",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=16,
+        help="LoRA alpha。通常先设成和 rank 相同。",
+    )
+    parser.add_argument(
+        "--lora_dropout",
+        type=float,
+        default=0.0,
+        help="LoRA dropout。医学小数据可以先用 0.0 或 0.05。",
+    )
+    parser.add_argument(
+        "--lora_init",
+        type=str,
+        default="gaussian",
+        choices=["gaussian", "default"],
+        help="LoRA 初始化方式。diffusers 官方示例常用 gaussian。",
+    )
+    parser.add_argument(
+        "--lora_target_modules",
+        type=str,
+        nargs="+",
+        default=["to_q", "to_k", "to_v", "to_out.0"],
+        help="LoRA 注入到 UNet 哪些线性层。默认注入 attention 的 Q/K/V/Out。",
+    )
+
+    # =========================
     # Stable Diffusion Textual Inversion
     # =========================
     parser.add_argument(
@@ -327,6 +363,7 @@ def parse_args():
             "ldm_ae",
             "latent_ddpm",
             "sd_full",
+            "sd_lora",
             "sd_textual_inversion",
         ],
         help="运行模式",
@@ -667,10 +704,12 @@ def parse_args():
 
 
 def validate_args(args):
-    # sd_full 模式相关参数检查
-    if args.mode == "sd_full":
+    # sd_full 和 sd_lora 模式相关参数检查
+    if args.mode in ["sd_full", "sd_lora"]:
         if args.pretrained_model_name_or_path is None:
-            raise ValueError("mode='sd_full' requires --pretrained_model_name_or_path.")
+            raise ValueError(
+                f"mode='{args.mode}' requires --pretrained_model_name_or_path."
+            )
 
     # use_class_conditioning 和 use_cross_attention_conditioning 是两种不同的条件注入路径。
     # 当前最小实现中不允许同时开启，避免类别条件被重复注入。

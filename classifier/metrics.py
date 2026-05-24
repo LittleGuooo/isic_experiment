@@ -203,19 +203,20 @@ def save_val_predictions_csv(
 
 def safe_div(a, b):
     """
-    安全除法：
-    分母不为 0 时正常除，
-    分母为 0 时返回 nan，避免程序报错。
+    安全除法。
+
+    当分母为 0 时返回 nan，而不是强行给 0。
+    这样后面用 np.nanmean 做宏平均时，可以自动忽略无法定义的类别指标。
     """
     return float(a) / float(b) if b != 0 else float("nan")
 
 
 def compute_auc80(y_true_binary, y_score, sensitivity_low=0.8):
     """
-    计算 AUC80。
-    这里的含义是：只统计 sensitivity >= 0.8 这段 ROC 曲线下的面积。
+    计算高敏感性区间下的部分 AUC。
 
-    常用于某些医学任务里更关注高敏感性（high sensitivity）区间的表现。
+    这里的 AUC80 表示只统计 sensitivity/TPR >= sensitivity_low 的 ROC 曲线面积。
+    注意：这个实现返回的是原始面积，没有除以区间宽度做标准化。
     """
     if len(np.unique(y_true_binary)) < 2:
         return float("nan")

@@ -5,6 +5,7 @@ from .checkpointing import save_training_checkpoint
 from .evaluation import run_generation_evaluation, save_evaluation_summary
 from ..metrics import save_visual_samples_during_training
 from ..modes.ldm_ae import save_ldm_ae_pretrained_outputs
+from ..utils import cleanup_after_generation
 
 
 def run_diffusion_training_loop(
@@ -72,14 +73,26 @@ def run_diffusion_training_loop(
 
                 accelerator.backward(loss)
 
-                # 只有真正同步梯度时才做梯度裁剪；
-                if accelerator.sync_gradients:
-                    max_grad_norm = getattr(args, "max_grad_norm", 1.0)
-                    accelerator.clip_grad_norm_(model.parameters(), max_grad_norm)
-
                 # 做梯度清空
                 if args.mode == "sd_textual_inversion":
                     modes["before_optimizer_step"](extra_components, accelerator)
+
+                # 只有真正同步梯度时才做梯度裁剪；
+                if accelerator.sync_gradients:
+                    max_grad_norm = getattr(args, "max_grad_norm", 1.0)
+
+                    # sd_textual_inversion 真正训练的是 text_encoder 的 input embedding，
+                    # model 本身是 nn.Identity()，没有参数，所以不能裁剪 model.parameters()。
+                    if args.mode == "sd_textual_inversion":
+                        params_to_clip = (
+                            extra_components["text_encoder"]
+                            .get_input_embeddings()
+                            .parameters()
+                        )
+                    else:
+                        params_to_clip = model.parameters()
+
+                    accelerator.clip_grad_norm_(params_to_clip, max_grad_norm)
 
                 optimizer.step()
 
@@ -185,6 +198,10 @@ def run_diffusion_training_loop(
                 epoch=epoch + 1,
             )
 
+            # 生成可视化样本会产生大量临时 CUDA 张量。
+            # 生成结束后主动清理缓存显存和 CUDA IPC 共享内存。
+            cleanup_after_generation(accelerator)
+
         accelerator.wait_for_everyone()
 
         # 进行评估
@@ -237,6 +254,10 @@ def run_diffusion_training_loop(
                     epoch=epoch + 1,
                     split_results=split_results,
                 )
+
+            # run_generation_evaluation 也会调用生成采样，
+            # 所以评估结束后同样清理一次。
+            cleanup_after_generation(accelerator)
 
         accelerator.wait_for_everyone()
 

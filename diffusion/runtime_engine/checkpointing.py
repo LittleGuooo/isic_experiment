@@ -41,6 +41,13 @@ def load_training_checkpoint(
     unwrapped_model = accelerator.unwrap_model(model)
     unwrapped_model.load_state_dict(checkpoint["model_state_dict"], strict=True)
 
+    if "extra_state" in checkpoint:
+        modes["load_checkpoint_extra_state"](
+            checkpoint=checkpoint["extra_state"],
+            extra_components=extra_components,
+            device=accelerator.device,
+        )
+
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
@@ -49,13 +56,6 @@ def load_training_checkpoint(
 
     if ema_model is not None and "ema_state_dict" in checkpoint:
         ema_model.load_state_dict(checkpoint["ema_state_dict"])
-
-    if "extra_state" in checkpoint:
-        modes["load_checkpoint_extra_state"](
-            checkpoint=checkpoint["extra_state"],
-            extra_components=extra_components,
-            device=accelerator.device,
-        )
 
     start_epoch = int(checkpoint.get("epoch", 0))
     global_step = int(checkpoint.get("global_step", 0))

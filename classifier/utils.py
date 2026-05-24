@@ -1,4 +1,3 @@
-# utils.py
 import json
 import random
 import warnings
@@ -54,14 +53,8 @@ def save_json(data, json_path):
 
 def format_count_ratio_dict(count_dict):
     """
-    把类别计数字典格式化成：
-    {
-        "MEL": "1113 (19.67%)",
-        "NV": "6705 (81.23%)"
-    }
-
-    这个格式适合写入 experiment_metadata.json，
-    和控制台输出保持一致。
+    把类别计数转换成带百分比的字符串，便于打印或写入 metadata。
+    例如 {"MEL": 1113} 会变成 {"MEL": "1113 (19.67%)"}。
     """
     if count_dict is None:
         return None
@@ -97,12 +90,10 @@ def count_labels_from_dataset(labels, class_names):
 
 def parse_ratios(ratios, num_classes):
     """
-    解析用户输入的生成比例，返回字典 {class_idx: ratio}。
+    解析命令行传入的生成比例，返回 {class_idx: ratio}。
 
-    例子：
-    --ratios 0:1.0 2:2.0
-    会得到：
-    {0: 1.0, 1: 0.0, 2: 2.0, ...}
+    例如 --ratios 0:1.0 2:2.0 表示：
+    类别 0 生成 1.0 倍，类别 2 生成 2.0 倍，其余类别默认 0.0。
     """
     gen_ratios = {c: 0.0 for c in range(num_classes)}
     if ratios is None:
@@ -123,8 +114,7 @@ def get_class_counts_from_dataset(dataset):
 
 class Summary(Enum):
     """
-    AverageMeter 的汇总方式。
-    当前代码里没有复杂使用，但保留不影响训练。
+    AverageMeter 的汇总类型，保留接口兼容性。
     """
 
     NONE = 0

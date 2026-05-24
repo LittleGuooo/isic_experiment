@@ -1,0 +1,45 @@
+{
+    "experiment_name": "260524-1329_resnet50_test-only",
+    "experiment_dir": "experiments\\260524-1329_resnet50_test-only",
+    "mode": "test_only",
+    "created_time": "2026-05-24 13:29:48",
+    "model": {
+        "arch": "resnet50",
+        "checkpoint_path": "experiments\\分类器(增强_2_1_3_2_5_5_6_4)_CFG_gscale_0.3_exluNV_resnet50_scratch_diffaug_lr0.001_bs128_seed42\\checkpoints\\last.pth.tar",
+        "num_classes": 7,
+        "class_names": [
+            "MEL",
+            "NV",
+            "BCC",
+            "AKIEC",
+            "BKL",
+            "DF",
+            "VASC"
+        ]
+    },
+    "data_config": {
+        "test_gt_csv_path": "dataset/ISIC2018_Task3_Test_GroundTruth.csv",
+        "test_img_dir": "dataset/ISIC2018_Task3_Test_Input",
+        "test_dataset_size": 1512,
+        "class_distribution": {
+            "MEL": "171 (11.31%)",
+            "NV": "909 (60.12%)",
+            "BCC": "93 (6.15%)",
+            "AKIEC": "43 (2.84%)",
+            "BKL": "217 (14.35%)",
+            "DF": "44 (2.91%)",
+            "VASC": "35 (2.31%)",
+            "Total": "1512 (100.00%)"
+        }
+    },
+    "runtime_info": {
+        "batch_size": 128,
+        "seed": 42,
+        "device": "cuda:0",
+        "updated_time": "2026-05-24 13:30:40"
+    },
+    "best_result": {
+        "test_balanced_acc": 0.38540644077969194,
+        "test_acc": 64.81481481481481
+    }
+}

@@ -10,7 +10,7 @@ from PIL import Image
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.kid import KernelInceptionDistance
 from tqdm.auto import tqdm
-
+from .data import normalize_label_to_index_and_name
 from .modeling import build_sampling_scheduler
 from .utils import (
     format_count_ratio_dict,
@@ -775,9 +775,7 @@ def save_visual_samples_during_training(
 
     device = accelerator.device
 
-    # =========================
     # 1) ldm_ae：保存原图 + 重建图
-    # =========================
     if args.mode == "ldm_ae":
         source_batch = None
 
@@ -839,10 +837,7 @@ def save_visual_samples_during_training(
 
         return
 
-    # =========================
     # 2) diffusion：保存生成图
-    # =========================
-
     sampling_scheduler = build_sampling_scheduler(
         noise_scheduler=noise_scheduler,
         use_ddim_sampling=args.use_ddim_sampling,
@@ -851,26 +846,37 @@ def save_visual_samples_during_training(
     generator = torch.Generator(device=device).manual_seed(args.seed + epoch)
 
     # 条件模型：构造类别标签。
-    # 这里用一个参数 num_visual_samples 控制总生成数量，
-    # 标签按类别循环分配，例如 7 类时：
-    # 0,1,2,3,4,5,6,0,1,2,...
+    # all 模式：按类别循环分配，例如 7 类时：0,1,2,3,4,5,6,0,1,2,...
+    # single_label 模式：全部填成目标类别编号，例如 MEL -> 0，BCC -> 2
     if args.use_class_conditioning or args.use_cross_attention_conditioning:
-        num_classes = len(class_names)
+        if args.data_mode == "single_label":
+            target_label_idx, target_label_name = normalize_label_to_index_and_name(
+                args.target_label,
+                class_names,
+            )
 
-        class_labels = (
-            torch.arange(
-                num_visual_samples,
+            class_labels = torch.full(
+                size=(num_visual_samples,),
+                fill_value=target_label_idx,
                 device=device,
                 dtype=torch.long,
             )
-            % num_classes
-        )
+        else:
+            num_classes = len(class_names)
 
-        save_name = f"epoch_{epoch:03d}_class_cond_samples.png"
+            class_labels = (
+                torch.arange(
+                    num_visual_samples,
+                    device=device,
+                    dtype=torch.long,
+                )
+                % num_classes
+            )
     # 无条件模型：不传 class_labels。
     else:
         class_labels = None
-        save_name = f"epoch_{epoch:03d}_samples.png"
+
+    save_name = f"epoch_{epoch:03d}_samples.png"
 
     images = modes["sample_images"](
         model=model,

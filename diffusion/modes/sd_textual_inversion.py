@@ -108,7 +108,13 @@ def build_sd_textual_inversion(args):
 
         tokenizer.add_tokens(placeholder_tokens)
 
-        text_encoder.resize_token_embeddings(len(tokenizer))
+        # 新增 placeholder token 后，需要扩展 CLIP text encoder 的 embedding 表。
+        # mean_resizing=False 可以关闭 transformers 的均值/协方差初始化提示；
+        # 后面我们会手动用 initializer_token 的 embedding 覆盖 placeholder embedding。
+        text_encoder.resize_token_embeddings(
+            len(tokenizer),
+            mean_resizing=False,
+        )
 
         token_embeds = text_encoder.get_input_embeddings().weight.data
 
@@ -250,11 +256,33 @@ def build_sd_textual_inversion(args):
 
         placeholder_tokens = extra_components["placeholder_tokens"]
 
+        # 准备类别标签
+        if class_labels is None:
+            num_classes = len(placeholder_tokens)
+            class_labels = (
+                torch.arange(
+                    batch_size,
+                    device=device,
+                    dtype=torch.long,
+                )
+                % num_classes
+            )
+        else:
+            class_labels = class_labels.to(device).long()
+
         prompts = []
 
         for label in class_labels.detach().cpu().tolist():
             token = placeholder_tokens[int(label)]
             prompts.append(f"a dermoscopic image of {token}")
+
+        # 修正 Stable Diffusion pipeline 期望的 scheduler 配置，避免 warning
+        from diffusers.configuration_utils import FrozenDict
+
+        scheduler_config = dict(sampling_scheduler.config)
+        scheduler_config["steps_offset"] = 1
+        scheduler_config["clip_sample"] = False
+        sampling_scheduler._internal_dict = FrozenDict(scheduler_config)
 
         pipe = StableDiffusionPipeline(
             vae=vae,
@@ -271,6 +299,8 @@ def build_sd_textual_inversion(args):
 
         output = pipe(
             prompt=prompts,
+            height=resolution,
+            width=resolution,
             num_inference_steps=num_inference_steps,
             guidance_scale=7.5,
             generator=generator,
@@ -279,6 +309,37 @@ def build_sd_textual_inversion(args):
         images = output.images
 
         return images
+
+    def load_checkpoint_extra_state(checkpoint, extra_components, device):
+        """
+        从 checkpoint 恢复 textual inversion 学到的 placeholder embedding 权重。
+
+        """
+        learned_embeds = checkpoint.get("learned_embeds", None)
+        if learned_embeds is None:
+            # 兼容旧 checkpoint 或异常情况，不崩溃
+            return None
+
+        tokenizer = extra_components["tokenizer"]
+        text_encoder = extra_components["text_encoder"]
+
+        # 获取整个 embedding 矩阵的引用，准备原地修改
+        embedding_weight = text_encoder.get_input_embeddings().weight
+
+        for token_str, saved_embed in learned_embeds.items():
+            token_id = tokenizer.convert_tokens_to_ids(token_str)
+            if token_id == tokenizer.unk_token_id:
+                # 理论不应发生，但保留检查
+                continue
+
+            # 确保 saved_embed 在同一设备和 dtype
+            saved_embed = saved_embed.to(
+                device=embedding_weight.device,
+                dtype=embedding_weight.dtype,
+            )
+            embedding_weight.data[token_id] = saved_embed
+
+        return None
 
     def checkpoint_extra_state(extra_components):
 
@@ -306,4 +367,21 @@ def build_sd_textual_inversion(args):
         "checkpoint_extra_state": checkpoint_extra_state,
         "before_optimizer_step": before_optimizer_step,
         "after_optimizer_step": after_optimizer_step,
+        "load_checkpoint_extra_state": load_checkpoint_extra_state,
     }
+
+
+def build_sd_full_noise_scheduler(args):
+    """
+    Stable Diffusion sd_textual_inversion 训练阶段使用预训练 checkpoint 自带 scheduler 配置。
+    """
+    pretrained_path = getattr(args, "pretrained_model_name_or_path", None)
+    if pretrained_path is None:
+        raise ValueError(
+            "sd_textual_inversion requires --pretrained_model_name_or_path"
+        )
+
+    return DDPMScheduler.from_pretrained(
+        pretrained_path,
+        subfolder="scheduler",
+    )

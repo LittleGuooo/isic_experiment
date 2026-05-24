@@ -1,12 +1,12 @@
 import os
-from collections import Counter
-
 import torch
 from torch.utils.data import ConcatDataset
 from tqdm.auto import tqdm
 
+
 from .dataset import SavedSyntheticISICDataset
 from .utils import parse_ratios, get_class_counts_from_dataset
+
 
 from diffusion.modeling import (
     build_model,
@@ -27,25 +27,6 @@ MODE_FACTORY = {
     "latent_ddpm": build_latent_ddpm,
     "sd_full": build_sd_full,
 }
-
-
-def parse_ratios(ratios, num_classes):
-    """解析用户输入的生成比例，返回字典 {class_idx: ratio}"""
-    gen_ratios = {c: 0.0 for c in range(num_classes)}
-    if ratios is None:
-        return gen_ratios
-
-    for item in ratios:
-        class_idx, ratio = item.split(":")
-        gen_ratios[int(class_idx)] = float(ratio)
-    return gen_ratios
-
-
-def get_class_counts_from_dataset(dataset):
-    """获取数据集中每个类别的样本数量"""
-    if not hasattr(dataset, "labels"):
-        raise AttributeError("dataset 必须有 labels 属性")
-    return dict(Counter(dataset.labels))
 
 
 def _has_existing_generated_images(output_dir, class_names):
@@ -100,7 +81,7 @@ def _print_generation_plan(original_class_counts, active_ratios, class_names):
 
 
 @torch.no_grad()
-def build_diffusion_model(args, class_names, num_classes, device, output_dir):
+def build_diffusion_generator(args, class_names, num_classes, device, output_dir):
     """加载扩散模型并生成图像所需组件"""
     if args.diffusion_checkpoint is None:
         raise ValueError("启用扩散增强时，必须提供 --diffusion_checkpoint。")
@@ -146,7 +127,7 @@ def build_diffusion_model(args, class_names, num_classes, device, output_dir):
 
 
 @torch.no_grad()
-def build_train_dataset(
+def build_augmented_train_dataset(
     args, train_dataset, class_names, num_classes, device, output_dir
 ):
     """构建训练集：可选择复用已有合成图，或现场生成新的合成图。"""
@@ -194,7 +175,7 @@ def build_train_dataset(
 
     print("未复用已有图片，开始生成新的合成图片", flush=True)
 
-    model, sampling_scheduler, mode_ops, extra_components = build_diffusion_model(
+    model, sampling_scheduler, mode_ops, extra_components = build_diffusion_generator(
         args=args,
         class_names=class_names,
         num_classes=num_classes,

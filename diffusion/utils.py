@@ -3,6 +3,7 @@ import os
 import shutil
 from collections import Counter
 from datetime import datetime
+import gc
 
 import pandas as pd
 import torch
@@ -10,8 +11,29 @@ import math
 from PIL import Image
 import random
 import numpy as np
+from pathlib import Path
+from argparse import Namespace
 
-# utils.py
+
+def cleanup_after_generation(accelerator):
+    """
+    在生成可视化样本 / 生成评估之后清理临时显存和共享 CUDA 引用。
+
+    说明：
+    1. gc.collect()：触发 Python 垃圾回收，释放已经没有引用的 Python 对象。
+    2. torch.cuda.empty_cache()：释放 PyTorch CUDA caching allocator 中未被占用的缓存显存。
+    3. torch.cuda.ipc_collect()：清理 CUDA IPC 相关的共享内存引用，适合多进程 / DataLoader / Accelerator 场景。
+    4. accelerator.wait_for_everyone()：多卡训练时保证所有进程都完成生成后再清理。
+    """
+    accelerator.wait_for_everyone()
+
+    gc.collect()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+    accelerator.wait_for_everyone()
 
 
 def set_seed(seed):
@@ -357,11 +379,67 @@ def create_experiment_folders(args):
     raise ValueError(f"Unsupported run_mode: {run_mode}")
 
 
-def save_json(data, json_path):
-    # 保存 JSON，ensure_ascii=False 可以正常保存中文
-    # indent=4 让文件更易读
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+def make_json_serializable(obj):
+    """
+    把 Python / PyTorch / NumPy 中不能直接写入 JSON 的对象，
+    转换成 JSON 可以保存的基础类型。
+    """
+
+    # 1. torch.Tensor
+    if isinstance(obj, torch.Tensor):
+        # 标量 tensor，例如 tensor(0.123)
+        if obj.numel() == 1:
+            return obj.detach().cpu().item()
+
+        # 多元素 tensor，例如 tensor([1, 2, 3])
+        return obj.detach().cpu().tolist()
+
+    # 2. NumPy 数组
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+
+    # 3. NumPy 标量，例如 np.float32 / np.int64
+    if isinstance(obj, np.generic):
+        return obj.item()
+
+    # 4. argparse.Namespace
+    if isinstance(obj, Namespace):
+        return vars(obj)
+
+    # 5. pathlib.Path
+    if isinstance(obj, Path):
+        return str(obj)
+
+    # 6. 字典：递归处理 value
+    if isinstance(obj, dict):
+        return {str(key): make_json_serializable(value) for key, value in obj.items()}
+
+    # 7. 列表 / 元组：递归处理每个元素
+    if isinstance(obj, (list, tuple)):
+        return [make_json_serializable(item) for item in obj]
+
+    # 8. 其他 JSON 原生支持的类型，直接返回
+    return obj
+
+
+def save_json(data, path):
+    """
+    保存 JSON 文件。
+    data: 要保存的数据
+    path: 保存路径
+    """
+
+    # 关键修改：
+    # 先把 Tensor / ndarray / Namespace 等对象转换成 JSON 可保存格式
+    data = make_json_serializable(data)
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(
+            data,
+            f,
+            ensure_ascii=False,
+            indent=4,
+        )
 
 
 def update_epoch_metrics_csv(metrics_csv_path, row_dict):

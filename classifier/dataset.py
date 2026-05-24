@@ -50,12 +50,6 @@ class ISICResNetDataset(Dataset):
         return image, label, image_id
 
 
-# ===== 文件位置：dataset.py =====
-# 1) 在 SavedSyntheticISICDataset.__init__ 里新增 self.labels
-# 2) 新增 format_count_ratio_dict
-# 3) print_class_distribution 复用 format_count_ratio_dict，避免两套格式逻辑分裂
-
-
 class SavedSyntheticISICDataset(Dataset):
     """从磁盘读取已经生成好的合成图。"""
 

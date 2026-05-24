@@ -109,7 +109,6 @@ class ISIC2018DDPMDataset(Dataset):
 
 def build_image_transforms(resolution):
     # 这里的归一化会把像素从 [0, 1] 映射到 [-1, 1]
-    # 这与扩散模型常见输入范围一致
     return transforms.Compose(
         [
             transforms.Resize(

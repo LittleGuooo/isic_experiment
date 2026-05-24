@@ -1,46 +1,12 @@
-# 找BUG
+python -m classifier.export_hard_samples --checkpoint "experiments/260521-1710_resnet50_noaug_lr_0.001/checkpoints/last.pth.tar" --arch resnet50 --gt-csv "dataset/ISIC2018_Task3_Training_GroundTruth.csv" --img-dir "dataset/ISIC2018_Task3_Training_Input" --output-csv "experiments/baseline_classifier/hard_samples_train_20pct.csv" --resolution 224 --batch-size 128 --workers 4 --hard-ratio 0.2 --gpu 0
 
-## classifier
+python -m diffusion.sd_lora_img2img_sampling --seed_strategy random --pretrained_model_name_or_path "C:/Users/Admin/.cache/huggingface/hub/models--nota-ai--bk-sdm-small/snapshots/572238db7ed3a10858900803f3fc8cca53e893e0" --sd_lora_ckpt_path "experiments/260521-2002_res256_sd_lora_uncond_all_seed42/checkpoints/last.pth.tar" --gt_csv_path "dataset/ISIC2018_Task3_Training_GroundTruth.csv" --img_dir "dataset/ISIC2018_Task3_Training_Input" --output_dir "experiments/260521-2002_res256_sd_lora_uncond_all_seed42/img2img_random" --resolution 256 --num_seed_per_class 20 --num_aug_per_seed 5 --strength 0.45 --guidance_scale 5.0 --num_inference_steps 250 --mixed_precision fp16
 
+python -m diffusion.sd_lora_img2img_sampling --seed_strategy hard --hard_csv_path "experiments/baseline_classifier/hard_samples_train_20pct.csv" --hard_ratio 1.0 --pretrained_model_name_or_path "C:/Users/Admin/.cache/huggingface/hub/models--nota-ai--bk-sdm-small/snapshots/572238db7ed3a10858900803f3fc8cca53e893e0" --sd_lora_ckpt_path "experiments/260521-2002_res256_sd_lora_uncond_all_seed42/checkpoints/last.pth.tar" --gt_csv_path "dataset/ISIC2018_Task3_Training_GroundTruth.csv" --img_dir "dataset/ISIC2018_Task3_Training_Input" --output_dir "experiments/260521-2002_res256_sd_lora_uncond_all_seed42/img2img_hard" --resolution 256 --num_seed_per_class 20 --num_aug_per_seed 5 --strength 0.45 --guidance_scale 5.0 --num_inference_steps 250 --mixed_precision fp16
 
-
-# 训练扩散模型
-python -m diffusion.main --run_mode train --mode cfg --resolution 224 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 1024 --use_class_conditioning --resnet_time_scale_shift scale_shift --exclude_train_nv --cfg_scale 0.3 --cond_drop_prob 0.15 --use_ema --num_epochs 120 --train_batch_size 20 --eval_batch_size 20 --resume_from_checkpoint experiments\20260415_021917_ddpm_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --eval_epochs 40
-
-## 训练ldm
-python -m diffusion.main --run_mode train --mode latent_ddpm --resolution 256 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 1024 --num_fid_samples_val 193 --use_class_conditioning --resnet_time_scale_shift scale_shift --exclude_train_nv --use_ema --num_epochs 120 --train_batch_size 64 --eval_batch_size 32 --autoencoder_ckpt_path experiments\ldmae_exluNV_labels_res256_bs8_seed42\autoencoder --resume_from_checkpoint experiments\20260416_165303_ddpm_cond_all_all_labels_res256_bs64_seed42\checkpoints\last.pth.tar
-
-# 训练cg
-python -m diffusion.main --run_mode train --mode cg --cg_diffusion_ckpt_path experiments\有条件(scale_shift)_ddpm_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --classifier_train_epochs 80 --classifier_train_batch_size 128 --resolution 128 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 1024 --use_class_conditioning --resnet_time_scale_shift scale_shift --use_ema --classifier_ckpt_path experiments\20260416_120535_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\classifier_last.pth.tar
+python -m classifier.main --arch resnet50 --batch-size 64 --workers 4 --epochs 100 --eval-freq 5 --save-every-eval --lr 0.001 --use-class-weights --use-amp --use-diffusion-augmentation --use_weighted_sampler --mode sd_full --aug-output-dir experiments\260521-2002_res256_sd_lora_uncond_all_seed42\img2img_random\random --resolution 256 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --gen-batch-size 24 --diffusion_checkpoint experiments\260505-0115_res512_sd_full_uncond_all_seed42\checkpoints\last.pth.tar --ratios 2:1 3:1 5:5.0 6:4.0 0:0.5 4:0.5
 
 
-# 训练分类器
-python -m classifier.main --epochs 100 --batch-size 128 --eval-freq 5 --save-every-eval --use-amp --arch resnet101
-
-## cg分类器
-python -m classifier.main --epochs 100 --diffusion_checkpoint experiments\有条件(scale_shift)_ddpm_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --ratios 2:1 3:1 5:5.0 6:4.0 --resnet_time_scale_shift scale_shift --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --use_ddim_sampling --use_class_conditioning --resolution 128 --mode cg --ddpm_num_inference_steps 100 --ddpm_num_steps 1000 --use-amp --classifier_guidance_scale 10 --classifier_ckpt_path experiments\20260416_120910_ddpm_cond_all_all_labels_res128_bs32_seed42\checkpoints\classifier_last.pth.tar --classifier_guidance_scale 10
-
-## ldm分类器
-python -m classifier.main --mode latent_ddpm --resolution 256 --ddpm_num_steps 1000 --ddpm_num_inference_steps 100 --use_ddim_sampling --use_class_conditioning --resnet_time_scale_shift scale_shift --epochs 100 --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --autoencoder_ckpt_path experiments\ldmae_exluNV_labels_res256_bs8_seed42\autoencoder --diffusion_checkpoint experiments\20260416_165303_ddpm_cond_all_all_labels_res256_bs64_seed42\checkpoints\last.pth.tar --ratios 2:1 3:1 5:5.0 6:4.0 --resume experiments\20260416_190424_resnet50_scratch_diffaug_lr0.001_bs128_seed42\checkpoints\last.pth.tar
-
-## experiments\20260415_225814_resnet50_scratch_diffaug_lr0.001_bs128_seed42
-python -m classifier.main --epochs 100 --diffusion_checkpoint experiments\有条件(scale)_CFG_eculNV_cond_all_all_labels_res128_bs20_seed42\checkpoints\last.pth.tar --ratios 2:1 3:1 5:5.0 6:4.0 --resnet_time_scale_shift scale_shift --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --use_ddim_sampling --use_class_conditioning --resolution 128 --mode cfg --cfg_scale 0.3 --cond_drop_prob 0.15 --ddpm_num_inference_steps 100 --ddpm_num_steps 1000 --use-amp --resume experiments\20260415_225814_resnet50_scratch_diffaug_lr0.001_bs128_seed42\checkpoints\last.pth.tar
-
-'''
-    #   0=MEL(Melanoma), 1=NV(Melanocytic nevus), 2=BCC(Basal cell carcinoma)
-    #   3=AKIEC(Actinic keratosis/Bowen's disease), 4=BKL(Benign keratosis)
-    #   5=DF(Dermatofibroma), 6=VASC(Vascular lesion)
-'''
-
-# 训练autoencoder
-python -m diffusion.main --run_mode train --mode ldm_ae --ae_mid_block_add_attention --ae_perceptual_loss_weight 0.2 --resolution 256 --ddpm_num_steps 1000 --exclude_train_nv --ddpm_num_inference_steps 100 --use_ddim_sampling --num_fid_samples_train 0 --use_ema --train_batch_size 8 --eval_epochs 10 --save_images_epochs 10 --num_epochs 50 --resume experiments\20260416_013429_ddpm_uncond_all_all_labels_res256_bs8_seed42\checkpoints\last.pth.tar
-
-
-python -m classifier.main --epochs 120 --ratios 2:1 3:1 5:5.0 6:4.0 --resnet_time_scale_shift scale_shift --gen-batch-size 64 --batch-size 128 --eval-freq 5 --save-every-eval --use-diffusion-augmentation --use_ddim_sampling --use_class_conditioning --resolution 128 --mode cfg --ddpm_num_inference_steps 100 --ddpm_num_steps 1000 --use-amp --aug-output-dir experiments\分类器(增强_2_1_3_2_5_5_6_4)_CFG_gscale_0.3_resnet50_scratch_diffaug_lr0.001_bs96_seed42\train_augmented_data 
-|| echo script1.py failed, continue
-
-
-![alt text](image.png)
 
 # git代码
 git checkout --orphan clean_branch
@@ -63,6 +29,18 @@ git rev-list --objects --all | git cat-file --batch-check="%(objecttype) %(objec
 512 × 512
 640 × 640
 768 × 768
+
+# 数据分布
+"train_dataset": {
+    "MEL": "1113 (11.11%)",
+    "NV": "6705 (66.95%)",
+    "BCC": "514 (5.13%)",
+    "AKIEC": "327 (3.27%)",
+    "BKL": "1099 (10.97%)",
+    "DF": "115 (1.15%)",
+    "VASC": "142 (1.42%)",
+    "Total": "10015 (100.00%)"
+}
 
 
 # 更新说明
@@ -107,3 +85,6 @@ diffusion.py变成条件扩散模型
 
 ## version 2.14
 实现了LDM的cross-attention机制
+
+## version 2.15
+重构了classifier代码

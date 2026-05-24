@@ -9,6 +9,7 @@ from diffusers import (
     AutoencoderKL,
     UNet2DConditionModel,
 )
+from peft import LoraConfig
 
 
 class ClassConditionedUNet2DConditionModel(nn.Module):
@@ -88,6 +89,59 @@ class ClassConditionedUNet2DConditionModel(nn.Module):
 def build_model(args, num_classes):
     if args.mode == "sd_textual_inversion":
         return nn.Identity()
+
+    # Stable Diffusion LoRA fine-tuning
+    if args.mode == "sd_lora":
+        if LoraConfig is None:
+            raise ImportError(
+                "mode='sd_lora' requires peft. Please install it with: pip install peft"
+            )
+
+        model = UNet2DConditionModel.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="unet",
+        )
+
+        # 关键：先冻结原始 UNet 参数。
+        # LoRA 的意义就是不要训练 base UNet。
+        model.requires_grad_(False)
+
+        # 构造 LoRA 配置。
+        # 官方 text-to-image LoRA 脚本常用 target_modules:
+        # ["to_k", "to_q", "to_v", "to_out.0"]
+        init_lora_weights = (
+            "gaussian" if getattr(args, "lora_init", "gaussian") == "gaussian" else True
+        )
+
+        unet_lora_config = LoraConfig(
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            init_lora_weights=init_lora_weights,
+            target_modules=args.lora_target_modules,
+            lora_dropout=args.lora_dropout,
+        )
+
+        # 给 UNet 注入 LoRA adapter。
+        # 注入后，LoRA 参数会是 requires_grad=True。
+        model.add_adapter(unet_lora_config)
+
+        model.train()
+
+        if getattr(args, "sd_enable_gradient_checkpointing", True):
+            model.enable_gradient_checkpointing()
+
+        if getattr(args, "sd_enable_xformers", False):
+            model.enable_xformers_memory_efficient_attention()
+
+        # 打印一下可训练参数比例，避免你误把全量 UNet 也训了。
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model.parameters())
+        print(
+            f"[sd_lora] trainable params: {trainable_params:,} / {total_params:,} "
+            f"({100.0 * trainable_params / total_params:.4f}%)"
+        )
+
+        return model
 
     # Stable Diffusion Full UNet fine-tuning
     if args.mode == "sd_full":
@@ -267,11 +321,22 @@ def build_model(args, num_classes):
 
 
 def build_noise_scheduler(args):
+    # Stable Diffusion textual inversion 使用预训练模型自带 scheduler 配置
+    if args.mode == "sd_textual_inversion":
+        from .modes.sd_textual_inversion import build_sd_full_noise_scheduler
+
+        return build_sd_full_noise_scheduler(args)
+
     # Stable Diffusion full fine-tuning 使用预训练模型自带 scheduler 配置
     if args.mode == "sd_full":
         from .modes.sd_full import build_sd_full_noise_scheduler
 
         return build_sd_full_noise_scheduler(args)
+
+    if args.mode == "sd_lora":
+        from .modes.sd_lora import build_sd_lora_noise_scheduler
+
+        return build_sd_lora_noise_scheduler(args)
 
     # ldm_ae 不需要 diffusion noise scheduler
     if args.mode == "ldm_ae":

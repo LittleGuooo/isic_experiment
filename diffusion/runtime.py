@@ -121,6 +121,24 @@ def run_train(args):
             weight_decay=args.adam_weight_decay,
             eps=args.adam_epsilon,
         )
+    elif args.mode == "sd_lora":
+        # LoRA 模式只优化 requires_grad=True 的参数。
+        # 正常情况下，这些参数应该只包括 LoRA adapter。
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+        if len(trainable_params) == 0:
+            raise ValueError(
+                "No trainable parameters found in sd_lora mode. "
+                "Check whether LoRA adapter was correctly added to UNet."
+            )
+
+        optimizer = torch.optim.AdamW(
+            trainable_params,
+            lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
     else:
         optimizer = torch.optim.AdamW(
             model.parameters(),

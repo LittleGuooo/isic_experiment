@@ -5,6 +5,7 @@ from .cg import build_cg
 from .ldm import build_latent_ddpm
 from .sd_full import build_sd_full
 from .sd_textual_inversion import build_sd_textual_inversion
+from .sd_lora import build_sd_lora
 
 
 def get_modes(args):
@@ -25,5 +26,7 @@ def get_modes(args):
         return build_sd_full(args)
     if mode == "sd_textual_inversion":
         return build_sd_textual_inversion(args)
+    if mode == "sd_lora":
+        return build_sd_lora(args)
 
     raise ValueError(f"Unsupported mode: {mode}")
