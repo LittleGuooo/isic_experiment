@@ -603,7 +603,7 @@ def parse_args():
     parser.add_argument(
         "--save_images_epochs",
         type=int,
-        default=20,
+        default=10,
         help="每隔多少 epoch 保存一批可视化生成样本",
     )
     parser.add_argument(

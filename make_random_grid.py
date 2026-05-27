@@ -5,6 +5,8 @@ import random
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
+""" 随机采样 16 张训练图片并保存为 4x4 网格。 """
+
 
 def parse_args():
     parser = argparse.ArgumentParser(

@@ -77,6 +77,12 @@ def parse_args():
     # 分类器基础训练参数
     # ============================================================
     parser.add_argument(
+        "--resolution",
+        type=int,
+        default=256,
+        help="图像的分辨率。",
+    )
+    parser.add_argument(
         "--resume",
         default=None,
         type=str,
@@ -259,12 +265,6 @@ def parse_args():
         type=str,
         default=None,
         help="扩散模型 checkpoint 路径；启用扩散增强时必须提供。",
-    )
-    parser.add_argument(
-        "--resolution",
-        type=int,
-        default=128,
-        help="扩散模型生成图像的分辨率。",
     )
     parser.add_argument(
         "--ddpm_num_steps",

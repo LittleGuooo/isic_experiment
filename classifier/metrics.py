@@ -356,7 +356,7 @@ def compute_detailed_classification_metrics(y_true, y_pred, y_prob, class_names)
         per_class_youden_list.append(youden_index)
 
     # 整体多分类指标
-    overall_accuracy = accuracy_score(y_true, y_pred) * 100.0
+    overall_accuracy = accuracy_score(y_true, y_pred)
     balanced_macro_recall = balanced_accuracy_score(y_true, y_pred)
     macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
     macro_precision = precision_score(y_true, y_pred, average="macro", zero_division=0)

@@ -44,7 +44,7 @@ def build_transforms(args):
 
     训练集保留随机裁剪和翻转；验证/测试集使用确定性预处理，避免评估结果抖动。
     """
-    input_size = 224
+    input_size = args.resolution
     train_transform = transforms.Compose(
         [
             transforms.RandomResizedCrop(input_size),
@@ -265,7 +265,7 @@ def _metric_row(prefix, epoch, train_metrics, eval_metrics, optimizer):
                 else None
             ),
             f"{prefix}_loss": float(eval_metrics["loss"]),
-            f"{prefix}_acc": float(overall["accuracy"]) / 100.0,
+            f"{prefix}_acc": float(overall["accuracy"]),
             f"{prefix}_balanced_acc": float(overall["balanced_multiclass_accuracy"]),
             f"{prefix}_macro_recall": float(overall["macro_recall"]),
             f"{prefix}_macro_f1": float(overall["macro_f1"]),
@@ -779,9 +779,9 @@ def run_training(args):
             filename="last.pth.tar",
         )
 
-        # 按 save_freq 额外保存周期性 checkpoint。
+        # 周期性保存 checkpoint。
         do_save = (epoch + 1) % args.save_freq == 0
-        if do_save:
+        if do_save and epoch >= args.epochs // 1.5:
             save_checkpoint(
                 state,
                 False,
@@ -840,6 +840,33 @@ def _load_classifier_checkpoint(args, checkpoint_path, device, fallback_num_clas
     return model, checkpoint, class_names, num_classes
 
 
+def _resolve_test_output_exp_dir(checkpoint, checkpoint_path):
+    """
+    决定 test-only 的输出目录。
+
+    优先级：
+    1. 如果 checkpoint 里有 exp_dir，直接用训练时的实验目录；
+    2. 如果没有 exp_dir，但 checkpoint 路径形如 xxx/实验名/checkpoints/model_best.pth.tar，
+       就从路径反推出实验目录；
+    3. 如果还是推不出来，就退回到 checkpoint 文件所在目录。
+    """
+    # 情况 1：你自己训练保存的 checkpoint，通常会有 exp_dir
+    if isinstance(checkpoint, dict) and checkpoint.get("exp_dir"):
+        return checkpoint["exp_dir"]
+
+    # 情况 2：从 checkpoint 路径推断实验目录
+    checkpoint_path = os.path.abspath(checkpoint_path)
+    checkpoint_dir = os.path.dirname(checkpoint_path)
+
+    # 常见结构：
+    # experiments/xxx_exp/checkpoints/model_best.pth.tar
+    if os.path.basename(checkpoint_dir) == "checkpoints":
+        return os.path.dirname(checkpoint_dir)
+
+    # 情况 3：兜底，至少不要再新建 experiments/xxx_test-only
+    return checkpoint_dir
+
+
 def run_test(args):
     """
     仅测试模式入口。
@@ -867,9 +894,18 @@ def run_test(args):
             "Warning: checkpoint 中的 class_names 与 test CSV 类别列不完全一致，将按 checkpoint 顺序评估。"
         )
 
-    timestamp = datetime.now().strftime("%y%m%d-%H%M")
-    exp_name = f"{timestamp}_{args.arch}_test-only"
-    exp_folders = setup_experiment_folders(base_dir="experiments", exp_name=exp_name)
+    ckpt_exp_dir = _resolve_test_output_exp_dir(
+        checkpoint=checkpoint,
+        checkpoint_path=args.test_checkpoint,
+    )
+
+    exp_name = "run_test"
+    exp_folders = setup_experiment_folders(
+        base_dir=ckpt_exp_dir,
+        exp_name=exp_name,
+    )
+
+    print(f"=> test outputs will be saved to: {exp_folders['exp_dir']}")
     metrics_csv_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.csv")
     metrics_json_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.json")
     metadata_json_path = os.path.join(
@@ -891,6 +927,7 @@ def run_test(args):
     experiment_metadata = {
         "experiment_name": exp_name,
         "experiment_dir": exp_folders["exp_dir"],
+        "parent_experiment_dir": ckpt_exp_dir,
         "mode": "test_only",
         "created_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "model": {

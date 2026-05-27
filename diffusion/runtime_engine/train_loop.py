@@ -291,7 +291,11 @@ def run_diffusion_training_loop(
                 exp_folders=exp_folders,
             )
 
-            if (epoch + 1) % args.save_model_epochs == 0:
+            # 按周期性保存checkpoints
+            should_save = (
+                epoch + 1
+            ) % args.save_model_epochs == 0 and epoch >= args.num_epochs // 1.5
+            if should_save:
                 epoch_ckpt_path = os.path.join(
                     exp_folders["checkpoints_dir"],
                     f"epoch_{epoch + 1:03d}.pth.tar",
