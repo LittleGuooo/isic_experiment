@@ -21,15 +21,15 @@
                 // "--workers",
                 // "4",
                 "--epochs",
-                "60",
+                "100",
                 // "--eval-freq",
                 // "5",
                 "--lr",
-                "0.003",
+                "0.001",
                 // "--use-class-weights",
                 "--use-amp",
                 // "--resume",
-                // "experiments\\260526-1629_resnet50_diff-ddpm_lr_0.003\\checkpoints\\last.pth.tar",
+                // "experiments\\260527-1555_resnet50_diff-ddpm_lr_0.003\\checkpoints\\last.pth.tar",
                 //// 扩散增强相关参数
                 // "--use-diffusion-augmentation",
                 // "--use_cross_attention_conditioning",
@@ -38,7 +38,7 @@
                 // "--mode",
                 // "sd_full",
                 "--aug-output-dir",
-                "experiments\\260526-2040_res256_sd_lora_uncond_all_seed42\\sampling_img2img\\random",
+                "experiments\\260526-2040_res256_sd_lora_uncond_all_seed42\\sampling_img2img\\hard\\res256_seed20_aug5_s0p45_gs5p0_steps100_runseed42_hr0p2_expand_mix400",
                 // "--resolution",
                 // "256",
                 // "--ddpm_num_steps",
@@ -62,7 +62,7 @@
                 // 测试模式
                 // "--test-only",
                 // "--test-checkpoint",
-                // "experiments\\260527-1832_resnet50_diff-ddpm_lr_0.003\\checkpoints\\last.pth.tar",
+                // "experiments\\实验数据归档\\260523-1746_resnet50_diff-ddpm_lr_0.001\\checkpoints\\checkpoint_epoch_065.pth.tar",
             ]
         }
     ]
@@ -85,7 +85,7 @@
 //                 //// 基础参数
 //                 // "--use_class_conditioning",
 //                 // "--use_cross_attention_conditioning",
-//                 "--use_weighted_sampler",
+//                 // "--use_weighted_sampler",
 //                 "--use_ddim_sampling",
 //                 "--resolution",
 //                 "256",

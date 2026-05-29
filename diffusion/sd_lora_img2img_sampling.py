@@ -92,7 +92,7 @@ def parse_args():
     parser.add_argument(
         "--num_seed_per_class",
         type=int,
-        default=20,
+        default=30,
         help="每个类别最终选择多少张 seed 原图。",
     )
     parser.add_argument(
@@ -102,6 +102,12 @@ def parse_args():
             "hard 模式下，如果最低 hard_ratio 的样本数不足 num_seed_per_class，"
             "就突破 hard_ratio，把候选池扩大到 num_seed_per_class。"
         ),
+    )
+    parser.add_argument(
+        "--exclude_seed_csv",
+        type=str,
+        default=None,
+        help="可选。提供一个 seed csv（如 selected_seeds_hard.csv），random 选 seed 时会排除其中的 image。",
     )
 
     # ========== baseline classifier，用于 hard 模式 ==========
@@ -128,7 +134,7 @@ def parse_args():
     parser.add_argument("--gpu", type=int, default=0)
 
     # ========== 采样参数 ==========
-    parser.add_argument("--num_aug_per_seed", type=int, default=5)
+    parser.add_argument("--num_aug_per_seed", type=int, default=10)
     parser.add_argument("--batch_size_sampling", type=int, default=32)
     parser.add_argument("--resolution", type=int, default=256)
     parser.add_argument("--strength", type=float, default=0.45)
@@ -188,13 +194,56 @@ def resolve_sampling_root(args):
     return str(exp_dir / "sampling_img2img")
 
 
+def format_tag_value(value):
+    """
+    把参数值转成适合放进目录名的字符串。
+    例如：
+        0.2  -> 0p2
+        3.0  -> 3p0
+        True -> true
+    """
+    if isinstance(value, float):
+        return str(value).replace(".", "p")
+    return str(value).replace(".", "p").replace("/", "-").replace("\\", "-")
+
+
 def build_run_dir(args, sampling_root):
     """
     当前采样参数对应的图片输出目录。
+
+    目录结构示例：
+        sampling_img2img/
+            hard/
+                res256_seed20_aug5_hr0p2_expand_s0p35_gs3p0_steps50_runseed42/
+            random/
+                res256_seed20_aug5_s0p35_gs3p0_steps50_runseed42/
     """
+    common_tag = (
+        f"res{args.resolution}"
+        f"_seed{args.num_seed_per_class}"
+        f"_aug{args.num_aug_per_seed}"
+        f"_s{format_tag_value(args.strength)}"
+        f"_gs{format_tag_value(args.guidance_scale)}"
+        f"_steps{args.num_inference_steps}"
+        f"_runseed{args.seed}"
+    )
+
+    if args.seed_strategy == "hard":
+        hard_tag = f"hr{format_tag_value(args.hard_ratio)}"
+
+        if args.expand_hard_pool_if_needed:
+            hard_tag += "_expand"
+        else:
+            hard_tag += "_noexpand"
+
+        param_tag = f"{common_tag}_{hard_tag}"
+    else:
+        param_tag = common_tag
+
     return os.path.join(
         sampling_root,
         args.seed_strategy,
+        param_tag,
     )
 
 
@@ -228,6 +277,63 @@ def select_random_seeds(gt_df, class_names, num_seed_per_class, seed):
 
         records = class_df.to_dict("records")
         rng.shuffle(records)
+        selected_rows.extend(records[: min(num_seed_per_class, len(records))])
+
+    return pd.DataFrame(selected_rows)
+
+
+def select_random_seeds_excluding_existing(
+    gt_df,
+    class_names,
+    num_seed_per_class,
+    seed,
+    exclude_seed_csv=None,
+):
+    """
+    每类随机选择 seed 图像。
+    如果提供 exclude_seed_csv，则先把里面已经使用过的 image 排除掉。
+    """
+    rng = random.Random(seed)
+    gt_df = gt_df.copy()
+
+    # 1) 如果提供了已有 seed 的 csv，就先排除这些 image
+    if exclude_seed_csv is not None:
+        exclude_df = pd.read_csv(exclude_seed_csv)
+
+        if "image" not in exclude_df.columns:
+            raise ValueError(f"'image' column not found in {exclude_seed_csv}")
+
+        exclude_images = set(exclude_df["image"].astype(str).tolist())
+
+        before = len(gt_df)
+        gt_df = gt_df[~gt_df["image"].astype(str).isin(exclude_images)].copy()
+        after = len(gt_df)
+
+        print(f"[INFO] exclude_seed_csv: {exclude_seed_csv}")
+        print(
+            f"[INFO] excluded {before - after} images that were already used as seeds."
+        )
+
+    selected_rows = []
+
+    for class_name in class_names:
+        class_df = gt_df[gt_df["label"] == class_name].copy()
+
+        if len(class_df) == 0:
+            print(
+                f"[WARN] class {class_name} has no available images after exclusion, skipped."
+            )
+            continue
+
+        if len(class_df) < num_seed_per_class:
+            print(
+                f"[WARN] class {class_name} only has {len(class_df)} available images, "
+                f"less than num_seed_per_class={num_seed_per_class}."
+            )
+
+        records = class_df.to_dict("records")
+        rng.shuffle(records)
+
         selected_rows.extend(records[: min(num_seed_per_class, len(records))])
 
     return pd.DataFrame(selected_rows)
@@ -356,16 +462,21 @@ def select_hard_seeds_from_confidences(
 ):
     """
     采样用 seed_df：
-    先按 confidence 从低到高排序。
-    默认从最低 hard_ratio 的候选池里抽 seed。
-    如果候选池不足 num_seed_per_class，并且 expand_hard_pool_if_needed=True，
-    就突破 hard_ratio，把候选池扩大到 num_seed_per_class。
+
+    每个类别内部，按真实类别 confidence 从低到高排序。
+    默认只允许从最低 hard_ratio 的候选池中选 seed。
+
+    当前逻辑：
+    1. 不再随机 shuffle；
+    2. 直接选择 confidence 最低的 num_seed_per_class 张；
+    3. 如果最低 hard_ratio 候选池不足 num_seed_per_class，
+       且 expand_hard_pool_if_needed=True，则候选池扩大到 num_seed_per_class；
+    4. 如果 expand_hard_pool_if_needed=False，则最多只能选 hard_ratio 池里的样本数。
 
     注意：
-    保存的 hard_samples.csv 仍然是原始 hard_ratio；
-    这里的“扩大”只影响本次采样 seed，不篡改 hard_samples.csv 的含义。
+    hard_samples.csv 仍然保存原始 hard_ratio 的样本；
+    expand 只影响本次采样 seed，不改变 hard_samples.csv 的定义。
     """
-    rng = random.Random(seed)
     selected_rows = []
 
     print("\n[INFO] hard seed selection stats:")
@@ -381,7 +492,9 @@ def select_hard_seeds_from_confidences(
             print(f"{class_name:<8} {0:>8} {0:>11} {0:>10} {0:>10} {'no':>9}")
             continue
 
+        # confidence 越低，样本越 hard
         class_df = class_df.sort_values("confidence", ascending=True)
+
         ratio_k = max(1, int(len(class_df) * hard_ratio))
 
         if expand_hard_pool_if_needed:
@@ -390,12 +503,13 @@ def select_hard_seeds_from_confidences(
         else:
             used_k = ratio_k
 
+        # 先得到允许使用的 hard pool
         hard_pool = class_df.iloc[:used_k].copy()
-        records = hard_pool.to_dict("records")
-        rng.shuffle(records)
 
-        selected = records[: min(num_seed_per_class, len(records))]
-        selected_rows.extend(selected)
+        # 不再 shuffle，直接取 confidence 最低的前 num_seed_per_class 张
+        selected = hard_pool.iloc[: min(num_seed_per_class, len(hard_pool))]
+
+        selected_rows.extend(selected.to_dict("records"))
 
         expanded = "yes" if used_k > ratio_k else "no"
         print(
@@ -514,20 +628,21 @@ def export_confidences_and_select_hard_seeds(args, device, sampling_root):
 
 def build_sd_lora_unet(args, device, weight_dtype):
     """
-    重新构造训练时的 sd_lora UNet，并加载 .pth.tar 里的 model_state_dict。
+    构造训练时的 sd_lora UNet，并严格检查 LoRA checkpoint 是否匹配。
     """
     if LoraConfig is None:
         raise ImportError(
             "sd_lora img2img requires peft. Please install: pip install peft"
         )
 
+    # 1) 先加载底模 UNet
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="unet",
     )
-
     unet.requires_grad_(False)
 
+    # 2) 按当前参数创建 LoRA adapter
     lora_config = LoraConfig(
         r=args.lora_rank,
         lora_alpha=args.lora_alpha,
@@ -537,21 +652,54 @@ def build_sd_lora_unet(args, device, weight_dtype):
     )
     unet.add_adapter(lora_config)
 
+    # 3) 读取 checkpoint
     ckpt = torch.load(args.sd_lora_ckpt_path, map_location="cpu")
+    if "model_state_dict" not in ckpt:
+        raise ValueError(
+            "checkpoint 中没有 'model_state_dict'，这个文件不像是你当前脚本期望的 LoRA 权重格式。"
+        )
+
     state_dict = ckpt["model_state_dict"]
 
-    missing, unexpected = unet.load_state_dict(state_dict, strict=False)
-
+    # 4) 只要没有 LoRA 相关参数，直接判死刑
     lora_keys = [k for k in state_dict.keys() if "lora" in k.lower()]
     if len(lora_keys) == 0:
         raise ValueError(
-            "No LoRA keys found in checkpoint['model_state_dict']. "
-            "你这个 checkpoint 可能不是 sd_lora 训练出来的。"
+            "No LoRA keys found in checkpoint['model_state_dict'].\n"
+            "这个 checkpoint 很可能不是 sd_lora 训练得到的权重。"
         )
+
+    # 5) 加载权重
+    missing, unexpected = unet.load_state_dict(state_dict, strict=False)
+
+    # 6) 只关注 LoRA 相关的 missing / unexpected
+    missing_lora = [k for k in missing if "lora" in k.lower()]
+    unexpected_lora = [k for k in unexpected if "lora" in k.lower()]
+
+    # 7) 只要 LoRA key 对不上，就直接报错，不要继续跑
+    if len(missing_lora) > 0 or len(unexpected_lora) > 0:
+        raise ValueError(
+            "LoRA checkpoint 与当前 UNet adapter 结构不匹配。\n"
+            f"missing_lora_keys={missing_lora}\n"
+            f"unexpected_lora_keys={unexpected_lora}\n"
+            "请检查：\n"
+            "1) pretrained_model_name_or_path 是否和训练时一致；\n"
+            "2) lora_rank / lora_alpha / lora_target_modules 是否和训练时一致；\n"
+            "3) 这个 checkpoint 是否真的是当前训练脚本保存的 LoRA 权重。"
+        )
+
+    # 8) 统计一下当前模型中 LoRA 参数数量，便于确认不是空加载
+    loaded_lora_param_count = 0
+    loaded_lora_tensor_count = 0
+    for name, param in unet.named_parameters():
+        if "lora" in name.lower():
+            loaded_lora_tensor_count += 1
+            loaded_lora_param_count += param.numel()
 
     print(f"[INFO] loaded sd_lora checkpoint: {args.sd_lora_ckpt_path}")
     print(f"[INFO] lora keys in checkpoint: {len(lora_keys)}")
-    print(f"[INFO] missing keys: {len(missing)}, unexpected keys: {len(unexpected)}")
+    print(f"[INFO] loaded LoRA tensors in UNet: {loaded_lora_tensor_count}")
+    print(f"[INFO] loaded LoRA params in UNet: {loaded_lora_param_count}")
 
     unet.to(device=device, dtype=weight_dtype)
     unet.eval()
@@ -773,11 +921,12 @@ def main():
         gt_df, class_names = read_isic_gt(args.gt_csv_path)
         print(f"[INFO] class_names from CSV: {class_names}")
 
-        seed_df = select_random_seeds(
+        seed_df = select_random_seeds_excluding_existing(
             gt_df=gt_df,
             class_names=class_names,
             num_seed_per_class=args.num_seed_per_class,
             seed=args.seed,
+            exclude_seed_csv=args.exclude_seed_csv,
         )
     else:
         seed_df, class_names = export_confidences_and_select_hard_seeds(

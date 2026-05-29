@@ -111,10 +111,8 @@ def build_image_transforms(resolution):
     # 这里的归一化会把像素从 [0, 1] 映射到 [-1, 1]
     return transforms.Compose(
         [
-            transforms.Resize(
-                (resolution, resolution),
-                interpolation=transforms.InterpolationMode.BILINEAR,
-            ),
+            transforms.Resize(resolution),
+            transforms.CenterCrop(resolution),
             transforms.ToTensor(),
             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
         ]

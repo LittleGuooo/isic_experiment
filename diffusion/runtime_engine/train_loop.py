@@ -1,14 +1,14 @@
 import os
 from tqdm.auto import tqdm
 import torch
-from .checkpointing import save_training_checkpoint
+from .checkpoint import save_training_checkpoint
 from .evaluation import run_generation_evaluation, save_evaluation_summary
 from ..metrics import save_visual_samples_during_training
 from ..modes.ldm_ae import save_ldm_ae_pretrained_outputs
 from ..utils import cleanup_after_generation
 
 
-def run_diffusion_training_loop(
+def run_training_loop(
     args,
     accelerator,
     model,

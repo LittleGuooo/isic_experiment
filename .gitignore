@@ -17,4 +17,4 @@ checkpoints/
 pretrained_models/
 experiments/*/fid_generated_images/
 experiments/*/train_augmented_data/
-
+experiments/*/sampling_img2img/*

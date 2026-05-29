@@ -1,7 +1,7 @@
 {
     "experiment_name": "260526-1728_resnet50_noaug_lr_0.003",
     "experiment_dir": "experiments\\260526-1728_resnet50_noaug_lr_0.003",
-    "created_time": "2026-05-26 17:28:54",
+    "created_time": "2026-05-28 17:16:56",
     "model": {
         "arch": "resnet50",
         "weights": "DEFAULT",
@@ -17,7 +17,7 @@
         ]
     },
     "training_config": {
-        "epochs": 60,
+        "epochs": 100,
         "batch_size": 64,
         "lr": 0.003,
         "min_lr": 1e-06,
@@ -92,8 +92,8 @@
         "mode_specific_params": {}
     },
     "resume_config": {
-        "resume_path": null,
-        "start_epoch": 0
+        "resume_path": "experiments\\260526-1728_resnet50_noaug_lr_0.003\\checkpoints\\last.pth.tar",
+        "start_epoch": 60
     },
     "early_stopping_config": {
         "patience": 0,
@@ -102,14 +102,14 @@
         "mode": "max"
     },
     "best_result": {
-        "best_epoch": 25,
-        "best_val_balanced_acc": 0.8590350996274341,
+        "best_epoch": 90,
+        "best_val_balanced_acc": 0.8856275547913179,
         "best_model_path": "experiments\\260526-1728_resnet50_noaug_lr_0.003\\checkpoints\\model_best.pth.tar"
     },
     "runtime_info": {
-        "last_epoch_finished": 60,
-        "updated_time": "2026-05-26 18:06:05",
-        "early_stop_counter": 7,
+        "last_epoch_finished": 100,
+        "updated_time": "2026-05-28 17:39:33",
+        "early_stop_counter": 2,
         "early_stopped": false
     }
 }

@@ -217,7 +217,7 @@ def parse_args():
     )
     parser.add_argument(
         "--save-freq",
-        default=10,
+        default=5,
         type=int,
         help="每隔多少个 epoch 保存一次checkpoint。",
     )

@@ -45,23 +45,61 @@ def build_transforms(args):
     训练集保留随机裁剪和翻转；验证/测试集使用确定性预处理，避免评估结果抖动。
     """
     input_size = args.resolution
+    imagenet_mean = [0.485, 0.456, 0.406]
+    imagenet_std = [0.229, 0.224, 0.225]
+
+    # 原始版本
+    # train_transform = transforms.Compose(
+    #     [
+    #         transforms.RandomResizedCrop(input_size),
+    #         transforms.RandomHorizontalFlip(),
+    #         transforms.RandomVerticalFlip(),
+    #         transforms.ToTensor(),
+    #         transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
+    #     ]
+    # )
+    # eval_transform = transforms.Compose(
+    #     [
+    #         transforms.Resize(input_size),
+    #         transforms.CenterCrop(input_size),
+    #         transforms.ToTensor(),
+    #         transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
+    #     ]
+    # )
+
+    # 推荐基线版
     train_transform = transforms.Compose(
         [
-            transforms.RandomResizedCrop(input_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomVerticalFlip(),
+            transforms.RandomResizedCrop(
+                input_size,
+                scale=(0.75, 1.0),
+                ratio=(0.9, 1.1),
+            ),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.ColorJitter(
+                brightness=0.10,
+                contrast=0.10,
+                saturation=0.05,
+                hue=0.02,
+            ),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
         ]
     )
-    eval_transform = transforms.Compose(
+
+    # 无随机增强版
+    common_transform = transforms.Compose(
         [
-            transforms.Resize(256),
+            transforms.Resize(input_size),
             transforms.CenterCrop(input_size),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Normalize(mean=imagenet_mean, std=imagenet_std),
         ]
     )
+    # train_transform = common_transform
+    eval_transform = common_transform
+
     return train_transform, eval_transform
 
 
@@ -781,7 +819,7 @@ def run_training(args):
 
         # 周期性保存 checkpoint。
         do_save = (epoch + 1) % args.save_freq == 0
-        if do_save and epoch >= args.epochs // 1.5:
+        if do_save:
             save_checkpoint(
                 state,
                 False,
@@ -815,6 +853,18 @@ def run_training(args):
                 f"Epoch {epoch + 1}/{args.epochs} | "
                 f"train_loss={train_metrics['train_loss']:.4f}"
             )
+
+    # 训练结束运行test-only
+    last_ckpt_path = os.path.join(
+        exp_folders["checkpoints_dir"],
+        "model_best.pth.tar",
+    )
+
+    print(f"\n>>> Training finished. Running test with last checkpoint:")
+    print(f">>> {last_ckpt_path}")
+
+    args.test_checkpoint = last_ckpt_path
+    run_test(args)
 
 
 def _load_classifier_checkpoint(args, checkpoint_path, device, fallback_num_classes):

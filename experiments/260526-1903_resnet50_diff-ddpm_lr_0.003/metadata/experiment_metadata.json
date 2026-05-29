@@ -1,7 +1,7 @@
 {
     "experiment_name": "260526-1903_resnet50_diff-ddpm_lr_0.003",
     "experiment_dir": "experiments\\260526-1903_resnet50_diff-ddpm_lr_0.003",
-    "created_time": "2026-05-26 19:03:09",
+    "created_time": "2026-05-28 18:12:25",
     "model": {
         "arch": "resnet50",
         "weights": "DEFAULT",
@@ -17,7 +17,7 @@
         ]
     },
     "training_config": {
-        "epochs": 60,
+        "epochs": 100,
         "batch_size": 64,
         "lr": 0.003,
         "min_lr": 1e-06,
@@ -101,8 +101,8 @@
         "mode_specific_params": {}
     },
     "resume_config": {
-        "resume_path": null,
-        "start_epoch": 0
+        "resume_path": "experiments\\260526-1903_resnet50_diff-ddpm_lr_0.003\\checkpoints\\last.pth.tar",
+        "start_epoch": 100
     },
     "early_stopping_config": {
         "patience": 0,
@@ -111,14 +111,8 @@
         "mode": "max"
     },
     "best_result": {
-        "best_epoch": 40,
-        "best_val_balanced_acc": 0.8893573615699052,
-        "best_model_path": "experiments\\260526-1903_resnet50_diff-ddpm_lr_0.003\\checkpoints\\model_best.pth.tar"
+        "best_epoch": 100,
+        "best_val_balanced_acc": 0.90495535242922
     },
-    "runtime_info": {
-        "last_epoch_finished": 60,
-        "updated_time": "2026-05-26 19:47:01",
-        "early_stop_counter": 4,
-        "early_stopped": false
-    }
+    "runtime_info": {}
 }
