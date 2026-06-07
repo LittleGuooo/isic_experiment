@@ -18,3 +18,4 @@ pretrained_models/
 experiments/*/fid_generated_images/
 experiments/*/train_augmented_data/
 experiments/*/sampling_img2img/
+experiments/实验数据归档/
