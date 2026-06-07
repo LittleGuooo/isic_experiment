@@ -1,0 +1,124 @@
+{
+    "experiment_name": "260523-2028_resnet50_diff-ddpm_lr_0.001",
+    "experiment_dir": "experiments\\260523-2028_resnet50_diff-ddpm_lr_0.001",
+    "created_time": "2026-05-23 20:28:13",
+    "model": {
+        "arch": "resnet50",
+        "weights": "DEFAULT",
+        "num_classes": 7,
+        "class_names": [
+            "MEL",
+            "NV",
+            "BCC",
+            "AKIEC",
+            "BKL",
+            "DF",
+            "VASC"
+        ]
+    },
+    "training_config": {
+        "epochs": 100,
+        "batch_size": 64,
+        "lr": 0.001,
+        "min_lr": 1e-06,
+        "momentum": 0.9,
+        "weight_decay": 0.0001,
+        "label_smoothing": 0.05,
+        "use_amp": true,
+        "use_class_weights": false,
+        "eval_freq": 5,
+        "seed": 42,
+        "device": "cuda:0"
+    },
+    "data_config": {
+        "train_gt_csv_path": "dataset/ISIC2018_Task3_Training_GroundTruth.csv",
+        "val_gt_csv_path": "dataset/ISIC2018_Task3_Validation_GroundTruth.csv",
+        "train_img_dir": "dataset/ISIC2018_Task3_Training_Input",
+        "val_img_dir": "dataset/ISIC2018_Task3_Validation_Input",
+        "train_dataset_size": 10015,
+        "val_dataset_size": 193,
+        "synthetic_dataset_size": 700,
+        "augmented_train_dataset_size": 10715,
+        "class_distribution": {
+            "train_dataset": {
+                "MEL": "1113 (11.11%)",
+                "NV": "6705 (66.95%)",
+                "BCC": "514 (5.13%)",
+                "AKIEC": "327 (3.27%)",
+                "BKL": "1099 (10.97%)",
+                "DF": "115 (1.15%)",
+                "VASC": "142 (1.42%)",
+                "Total": "10015 (100.00%)"
+            },
+            "val_dataset": {
+                "MEL": "21 (10.88%)",
+                "NV": "123 (63.73%)",
+                "BCC": "15 (7.77%)",
+                "AKIEC": "8 (4.15%)",
+                "BKL": "22 (11.40%)",
+                "DF": "1 (0.52%)",
+                "VASC": "3 (1.55%)",
+                "Total": "193 (100.00%)"
+            },
+            "synthetic_dataset": {
+                "MEL": "100 (14.29%)",
+                "NV": "100 (14.29%)",
+                "BCC": "100 (14.29%)",
+                "AKIEC": "100 (14.29%)",
+                "BKL": "100 (14.29%)",
+                "DF": "100 (14.29%)",
+                "VASC": "100 (14.29%)",
+                "Total": "700 (100.00%)"
+            },
+            "augmented_train_dataset": {
+                "MEL": "1213 (11.32%)",
+                "NV": "6805 (63.51%)",
+                "BCC": "614 (5.73%)",
+                "AKIEC": "427 (3.99%)",
+                "BKL": "1199 (11.19%)",
+                "DF": "215 (2.01%)",
+                "VASC": "242 (2.26%)",
+                "Total": "10715 (100.00%)"
+            }
+        }
+    },
+    "augmentation_config": {
+        "enabled": true,
+        "requested": true,
+        "mode": "ddpm",
+        "use_class_conditioning": false,
+        "use_cross_attention_conditioning": false,
+        "use_ddim_sampling": false,
+        "ddim_eta": 0.0,
+        "resolution": 128,
+        "ddpm_num_steps": 1000,
+        "ddpm_num_inference_steps": 100,
+        "ddpm_beta_schedule": "squaredcos_cap_v2",
+        "diffusion_checkpoint": null,
+        "ratios_raw": null,
+        "active_ratios_by_class_name": {},
+        "aug_output_dir": "experiments\\260521-2002_res256_sd_lora_uncond_all_seed42\\img2img_random\\random",
+        "mode_specific_params": {}
+    },
+    "resume_config": {
+        "resume_path": null,
+        "start_epoch": 0
+    },
+    "early_stopping_config": {
+        "patience": 0,
+        "min_delta": 0.0,
+        "monitor": "val_balanced_acc",
+        "mode": "max"
+    },
+    "best_result": {
+        "best_epoch": 55,
+        "best_val_balanced_acc": 0.8913499102523492,
+        "best_model_path": "experiments\\260523-2028_resnet50_diff-ddpm_lr_0.001\\checkpoints\\model_best.pth.tar"
+    },
+    "runtime_info": {
+        "last_epoch_finished": 100,
+        "updated_time": "2026-05-23 21:15:24",
+        "early_stop_counter": 9,
+        "early_stopped": false
+    }
+}
