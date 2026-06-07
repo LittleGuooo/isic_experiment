@@ -261,7 +261,7 @@ def build_datasets_and_loaders(args):
         sampler=train_sampler,
     )
 
-    # train_eval_loader：用于训练集评估
+    # train_eval_loader：用于在训练集上算 FID/KID/IPR 或保存训练集参考特征
     train_eval_loader = _make_loader(
         dataset=train_dataset,
         batch_size=args.eval_batch_size,
@@ -269,7 +269,7 @@ def build_datasets_and_loaders(args):
         drop_last=False,
     )
 
-    # val_eval_loader：验证集评估不需要打乱顺序
+    # val_eval_loader：用于在验证集上评估生成质量
     val_eval_loader = _make_loader(
         dataset=val_dataset,
         batch_size=args.eval_batch_size,

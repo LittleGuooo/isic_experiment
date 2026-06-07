@@ -1,0 +1,115 @@
+{
+    "overall": {
+        "accuracy": 0.8601036269430051,
+        "balanced_multiclass_accuracy": 0.6689261957554641,
+        "macro_recall": 0.6689261957554641,
+        "macro_precision": 0.6538741442232192,
+        "macro_f1": 0.6604403666228397,
+        "multiclass_macro_auc_ovr": 0.9715692177308658,
+        "mean_auc_all_diagnoses": 0.9715692177308658,
+        "mean_average_precision_all_diagnoses": 0.8062598330333007,
+        "mean_sensitivity": 0.6689261957554641,
+        "mean_specificity": 0.970715901839733,
+        "mean_accuracy": 0.9600296076980015,
+        "mean_f1": 0.6604403666228397,
+        "mean_ppv": 0.6538741442232192,
+        "mean_npv": 0.9696858384014823,
+        "melanoma_auc80": 0.925249169435216,
+        "malignant_vs_benign_auc": 0.9592739475289811,
+        "mcc": 0.7521041678201649,
+        "cohen_kappa": 0.7518807732596895,
+        "mean_youden_index": 0.6396420975951972
+    },
+    "per_class": {
+        "MEL": {
+            "sensitivity": 0.6666666666666666,
+            "specificity": 0.9709302325581395,
+            "accuracy": 0.9378238341968912,
+            "auc": 0.9493355481727574,
+            "average_precision": 0.80534651491627,
+            "f1_score": 0.7,
+            "ppv": 0.7368421052631579,
+            "npv": 0.9597701149425287,
+            "auc80": 0.925249169435216,
+            "youden_index": 0.637596899224806
+        },
+        "NV": {
+            "sensitivity": 0.943089430894309,
+            "specificity": 0.9142857142857143,
+            "accuracy": 0.9326424870466321,
+            "auc": 0.9795586527293845,
+            "average_precision": 0.9899821605874866,
+            "f1_score": 0.946938775510204,
+            "ppv": 0.9508196721311475,
+            "npv": 0.9014084507042254,
+            "auc80": NaN,
+            "youden_index": 0.8573751451800233
+        },
+        "BCC": {
+            "sensitivity": 0.8,
+            "specificity": 0.9719101123595506,
+            "accuracy": 0.9585492227979274,
+            "auc": 0.9797752808988764,
+            "average_precision": 0.7575145714851597,
+            "f1_score": 0.7500000000000001,
+            "ppv": 0.7058823529411765,
+            "npv": 0.9829545454545454,
+            "auc80": NaN,
+            "youden_index": 0.7719101123595506
+        },
+        "AKIEC": {
+            "sensitivity": 0.5,
+            "specificity": 0.972972972972973,
+            "accuracy": 0.9533678756476683,
+            "auc": 0.9175675675675675,
+            "average_precision": 0.29983766233766235,
+            "f1_score": 0.47058823529411764,
+            "ppv": 0.4444444444444444,
+            "npv": 0.9782608695652174,
+            "auc80": NaN,
+            "youden_index": 0.472972972972973
+        },
+        "BKL": {
+            "sensitivity": 0.7727272727272727,
+            "specificity": 0.9649122807017544,
+            "accuracy": 0.9430051813471503,
+            "auc": 0.9747474747474747,
+            "average_precision": 0.7911379219065261,
+            "f1_score": 0.7555555555555555,
+            "ppv": 0.7391304347826086,
+            "npv": 0.9705882352941176,
+            "auc80": NaN,
+            "youden_index": 0.7376395534290272
+        },
+        "DF": {
+            "sensitivity": 0.0,
+            "specificity": 1.0,
+            "accuracy": 0.9948186528497409,
+            "auc": 1.0,
+            "average_precision": 1.0,
+            "f1_score": 0.0,
+            "ppv": 0.0,
+            "npv": 0.9948186528497409,
+            "auc80": NaN,
+            "youden_index": 0.0
+        },
+        "VASC": {
+            "sensitivity": 1.0,
+            "specificity": 1.0,
+            "accuracy": 1.0,
+            "auc": 1.0,
+            "average_precision": 1.0,
+            "f1_score": 1.0,
+            "ppv": 1.0,
+            "npv": 1.0,
+            "auc80": NaN,
+            "youden_index": 1.0
+        }
+    },
+    "malignant_definition_used": [
+        "MEL",
+        "BCC",
+        "AKIEC"
+    ],
+    "val_loss": 0.6347877688976149
+}

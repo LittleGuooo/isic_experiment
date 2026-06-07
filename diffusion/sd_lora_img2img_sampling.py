@@ -15,14 +15,15 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from diffusers import (
-    StableDiffusionImg2ImgPipeline,
-    DDPMScheduler,
     AutoencoderKL,
+    DDIMScheduler,
+    StableDiffusionImg2ImgPipeline,
     UNet2DConditionModel,
 )
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from classifier.dataset import ISICResNetDataset
+from classifier.trainer import build_transforms
 
 try:
     from peft import LoraConfig
@@ -30,6 +31,8 @@ except ImportError:
     LoraConfig = None
 
 
+# 类别名必须和 CSV / Dataset 里的列名一致；后面 build_sampling_tasks 会用 label 查 prompt。
+# 这里的 prompt 只负责给 img2img 提供类别文本条件，不会自动保证生成图标签正确。
 ISIC_PROMPTS = {
     "MEL": "a dermoscopic image of melanoma",
     "NV": "a dermoscopic image of melanocytic nevus",
@@ -41,18 +44,22 @@ ISIC_PROMPTS = {
 }
 
 
+# -----------------------------------------------------------------------------
+# Arguments
+# -----------------------------------------------------------------------------
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Export hard samples with a trained ISIC classifier, then run "
-            "Stable Diffusion LoRA img2img / SDEdit sampling."
+            "Select random/hard ISIC seed images, then run Stable Diffusion "
+            "LoRA img2img / SDEdit-style sampling."
         )
     )
 
-    # ========== Stable Diffusion / LoRA ==========
+    # Stable Diffusion / LoRA：必须和训练 LoRA 时使用的底模、LoRA 结构保持一致。
     parser.add_argument("--pretrained_model_name_or_path", type=str, required=True)
     parser.add_argument("--sd_lora_ckpt_path", type=str, required=True)
-
     parser.add_argument("--lora_rank", type=int, default=16)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--lora_dropout", type=float, default=0.0)
@@ -63,59 +70,69 @@ def parse_args():
         default=["to_q", "to_k", "to_v", "to_out.0"],
     )
 
-    # ========== ISIC 数据 ==========
+    # ISIC data
     parser.add_argument(
         "--gt_csv_path",
         type=str,
-        default="dataset\ISIC2018_Task3_Training_GroundTruth.csv",
+        default="dataset/ISIC2018_Task3_Training_GroundTruth.csv",
     )
     parser.add_argument(
         "--img_dir",
         type=str,
-        default="dataset\ISIC2018_Task3_Training_Input",
+        default="dataset/ISIC2018_Task3_Training_Input",
     )
 
-    # ========== seed 选择 ==========
+    # Seed selection：random 直接从 GT 里抽；hard 需要先跑分类器算 true-class confidence。
     parser.add_argument(
         "--seed_strategy",
         type=str,
         choices=["random", "hard"],
         required=True,
-        help="random: 每类随机选图；hard: 先用分类器计算真实类别置信度，再选低置信度样本。",
+        help="random: per-class random seeds; hard: per-class low true-class confidence seeds.",
     )
     parser.add_argument(
         "--hard_ratio",
         type=float,
-        default=0.2,
-        help="每类最低置信度比例。若候选 seed 不够，可自动扩大候选池到 num_seed_per_class。",
+        default=0.3,
+        help="In hard mode, only the lowest hard_ratio samples per class are used as the default hard pool.",
     )
     parser.add_argument(
         "--num_seed_per_class",
         type=int,
         default=30,
-        help="每个类别最终选择多少张 seed 原图。",
+        help="Maximum number of seed images selected for each class.",
     )
     parser.add_argument(
         "--expand_hard_pool_if_needed",
         action="store_true",
         help=(
-            "hard 模式下，如果最低 hard_ratio 的样本数不足 num_seed_per_class，"
-            "就突破 hard_ratio，把候选池扩大到 num_seed_per_class。"
+            "Hard mode only. If the hard_ratio pool has fewer than num_seed_per_class "
+            "samples, expand the pool up to num_seed_per_class."
         ),
     )
     parser.add_argument(
         "--exclude_seed_csv",
         type=str,
         default=None,
-        help="可选。提供一个 seed csv（如 selected_seeds_hard.csv），random 选 seed 时会排除其中的 image。",
+        help=(
+            "Optional seed CSV with an 'image' column. Both random and hard mode "
+            "will exclude these images before selecting new seeds."
+        ),
+    )
+    parser.add_argument(
+        "--exclude_classes",
+        type=str,
+        nargs="+",
+        default=[],
+        help="Classes to exclude from img2img generation, e.g. MEL NV.",
     )
 
-    # ========== baseline classifier，用于 hard 模式 ==========
+    # Classifier used by hard mode：hard 模式用它判断“哪些真实类别置信度低”。
     parser.add_argument(
         "--classifier_checkpoint",
         type=str,
         default=None,
-        help="baseline 分类器 checkpoint。seed_strategy=hard 时必须提供。",
+        help="Required when --seed_strategy hard. Baseline classifier checkpoint.",
     )
     parser.add_argument(
         "--classifier_arch",
@@ -127,21 +144,21 @@ def parse_args():
         "--classifier_resolution",
         type=int,
         default=256,
-        help="分类器输入分辨率。必须和 baseline 训练/验证时一致。",
+        help="Classifier input resolution. Must match baseline training/evaluation.",
     )
     parser.add_argument("--classifier_batch_size", type=int, default=64)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--gpu", type=int, default=0)
 
-    # ========== 采样参数 ==========
-    parser.add_argument("--num_aug_per_seed", type=int, default=10)
+    # Sampling parameters：这些参数直接传给 Diffusers img2img pipeline。
+    parser.add_argument("--num_aug_per_seed", type=int, default=5)
     parser.add_argument("--batch_size_sampling", type=int, default=32)
     parser.add_argument("--resolution", type=int, default=256)
     parser.add_argument("--strength", type=float, default=0.45)
     parser.add_argument("--guidance_scale", type=float, default=5.0)
     parser.add_argument("--num_inference_steps", type=int, default=100)
 
-    # ========== 运行设置 ==========
+    # Runtime：output_dir 建议在 Windows 上设短路径，避免保存图片时路径过长。
     parser.add_argument(
         "--mixed_precision",
         type=str,
@@ -154,19 +171,26 @@ def parse_args():
         type=str,
         default=None,
         help=(
-            "输出根目录。若不指定，默认放到 sd_lora_ckpt_path 所在实验目录的 sampling_img2img 下。"
+            "Output root. If omitted, use the experiment directory inferred from "
+            "sd_lora_ckpt_path/sampling_img2img."
         ),
     )
     parser.add_argument(
         "--overwrite_run_dir",
         action="store_true",
-        help="清空当前参数对应的生成图片目录，避免旧图片累计影响统计。",
+        help="Delete the current run directory before sampling.",
     )
 
     return parser.parse_args()
 
 
+# -----------------------------------------------------------------------------
+# Small utilities
+# -----------------------------------------------------------------------------
+
+
 def get_weight_dtype(mixed_precision):
+    # 只控制 SD 组件的 dtype；分类器仍按 PyTorch 默认 float32 推理。
     if mixed_precision == "fp16":
         return torch.float16
     if mixed_precision == "bf16":
@@ -174,50 +198,38 @@ def get_weight_dtype(mixed_precision):
     return torch.float32
 
 
-def resolve_sampling_root(args):
-    """
-    默认输出根目录：
-        experiments/xxx/sampling_img2img
-
-    hard_samples.csv 和 all_confidences.csv 会保存在这个目录下；
-    生成图片会保存在这个目录的子目录中。
-    """
-    if args.output_dir is not None:
-        return str(args.output_dir)
-
-    ckpt_path = Path(args.sd_lora_ckpt_path)
-    if ckpt_path.parent.name == "checkpoints":
-        exp_dir = ckpt_path.parent.parent
-    else:
-        exp_dir = ckpt_path.parent
-
-    return str(exp_dir / "sampling_img2img")
-
-
 def format_tag_value(value):
-    """
-    把参数值转成适合放进目录名的字符串。
-    例如：
-        0.2  -> 0p2
-        3.0  -> 3p0
-        True -> true
-    """
+    """Make parameter values safe for directory names."""
     if isinstance(value, float):
         return str(value).replace(".", "p")
     return str(value).replace(".", "p").replace("/", "-").replace("\\", "-")
 
 
-def build_run_dir(args, sampling_root):
-    """
-    当前采样参数对应的图片输出目录。
+def stable_int_hash(text, modulo):
+    """Stable hash for reproducible per-image generation seeds."""
+    value = int(hashlib.md5(str(text).encode("utf-8")).hexdigest(), 16)
+    return value % modulo
 
-    目录结构示例：
-        sampling_img2img/
-            hard/
-                res256_seed20_aug5_hr0p2_expand_s0p35_gs3p0_steps50_runseed42/
-            random/
-                res256_seed20_aug5_s0p35_gs3p0_steps50_runseed42/
-    """
+
+def resolve_sampling_root(args):
+    """Infer default output root from the LoRA checkpoint location."""
+    # 用户手动指定输出根目录时，直接使用它，避免深层 experiment 路径过长。
+    if args.output_dir is not None:
+        return str(args.output_dir)
+
+    ckpt_path = Path(args.sd_lora_ckpt_path)
+    # 兼容两种常见 checkpoint 放法：exp/checkpoints/xxx.pt 或 exp/xxx.pt。
+    exp_dir = (
+        ckpt_path.parent.parent
+        if ckpt_path.parent.name == "checkpoints"
+        else ckpt_path.parent
+    )
+    return str(exp_dir / "sampling_img2img")
+
+
+def build_run_dir(args, sampling_root):
+    """Build the run-specific image output directory from sampling parameters."""
+    # 目录名记录关键采样参数，便于区分实验；图片文件名则保持短，避免 Windows 路径过长。
     common_tag = (
         f"res{args.resolution}"
         f"_seed{args.num_seed_per_class}"
@@ -229,57 +241,73 @@ def build_run_dir(args, sampling_root):
     )
 
     if args.seed_strategy == "hard":
+        # hard_ratio 和是否 expand 会改变 seed 池，所以必须写进 run_dir。
         hard_tag = f"hr{format_tag_value(args.hard_ratio)}"
+        hard_tag += "_expand" if args.expand_hard_pool_if_needed else "_noexpand"
+        common_tag = f"{common_tag}_{hard_tag}"
 
-        if args.expand_hard_pool_if_needed:
-            hard_tag += "_expand"
-        else:
-            hard_tag += "_noexpand"
+    return os.path.join(sampling_root, args.seed_strategy, common_tag)
 
-        param_tag = f"{common_tag}_{hard_tag}"
-    else:
-        param_tag = common_tag
 
-    return os.path.join(
-        sampling_root,
-        args.seed_strategy,
-        param_tag,
-    )
+def read_exclude_images(exclude_seed_csv):
+    """Read image IDs from a seed CSV. Return None when no CSV is provided."""
+    if exclude_seed_csv is None:
+        return None
+
+    exclude_df = pd.read_csv(exclude_seed_csv)
+    # 这里只认 image 列；不依赖 label，避免旧 CSV 的列格式影响排除逻辑。
+    if "image" not in exclude_df.columns:
+        raise ValueError(f"'image' column not found in {exclude_seed_csv}")
+
+    return set(exclude_df["image"].astype(str).tolist())
+
+
+def exclude_images_by_id(df, exclude_seed_csv, context):
+    """Exclude rows whose image ID appears in exclude_seed_csv."""
+    exclude_images = read_exclude_images(exclude_seed_csv)
+    if exclude_images is None:
+        return df
+
+    before = len(df)
+    # random 模式传入 GT 表；hard 模式传入 conf_df。两者都有 image 列，所以可以复用。
+    kept_df = df[~df["image"].astype(str).isin(exclude_images)].copy()
+    after = len(kept_df)
+
+    print(f"[INFO] exclude_seed_csv for {context}: {exclude_seed_csv}")
+    print(f"[INFO] excluded {before - after} images from {context} candidate pool.")
+    return kept_df.reset_index(drop=True)
+
+
+def make_output_dirs(args):
+    sampling_root = resolve_sampling_root(args)
+    run_dir = build_run_dir(args, sampling_root)
+
+    os.makedirs(sampling_root, exist_ok=True)
+    # overwrite 只清当前参数对应的 run_dir，不会删除整个 sampling_root。
+    if args.overwrite_run_dir and os.path.isdir(run_dir):
+        shutil.rmtree(run_dir)
+    os.makedirs(run_dir, exist_ok=True)
+
+    return sampling_root, run_dir
+
+
+# -----------------------------------------------------------------------------
+# Seed selection: random mode
+# -----------------------------------------------------------------------------
 
 
 def read_isic_gt(gt_csv_path):
-    """
-    读取 ISIC one-hot 标签 CSV，输出三列：
-        image, label_idx, label
-    """
+    """Read ISIC one-hot labels and return columns: image, label_idx, label."""
     df = pd.read_csv(gt_csv_path)
+    # ISIC GT 是 one-hot 表：除 image 外的列就是类别名，列顺序也决定 label_idx。
     class_columns = [c for c in df.columns if c != "image"]
 
+    # argmax 把 one-hot 转成整数标签；必须和 Dataset / 分类器训练时的类别顺序一致。
     df["label_idx"] = df[class_columns].values.argmax(axis=1)
     df["label"] = df["label_idx"].apply(lambda x: class_columns[int(x)])
-
     df["image"] = df["image"].astype(str)
+
     return df[["image", "label_idx", "label"]], class_columns
-
-
-def select_random_seeds(gt_df, class_names, num_seed_per_class, seed):
-    """
-    每类随机选择 seed 图像。
-    """
-    rng = random.Random(seed)
-    selected_rows = []
-
-    for class_name in class_names:
-        class_df = gt_df[gt_df["label"] == class_name].copy()
-        if len(class_df) == 0:
-            print(f"[WARN] class {class_name} has no images, skipped.")
-            continue
-
-        records = class_df.to_dict("records")
-        rng.shuffle(records)
-        selected_rows.extend(records[: min(num_seed_per_class, len(records))])
-
-    return pd.DataFrame(selected_rows)
 
 
 def select_random_seeds_excluding_existing(
@@ -289,40 +317,17 @@ def select_random_seeds_excluding_existing(
     seed,
     exclude_seed_csv=None,
 ):
-    """
-    每类随机选择 seed 图像。
-    如果提供 exclude_seed_csv，则先把里面已经使用过的 image 排除掉。
-    """
+    """Randomly select up to num_seed_per_class images per class after optional exclusion."""
     rng = random.Random(seed)
-    gt_df = gt_df.copy()
-
-    # 1) 如果提供了已有 seed 的 csv，就先排除这些 image
-    if exclude_seed_csv is not None:
-        exclude_df = pd.read_csv(exclude_seed_csv)
-
-        if "image" not in exclude_df.columns:
-            raise ValueError(f"'image' column not found in {exclude_seed_csv}")
-
-        exclude_images = set(exclude_df["image"].astype(str).tolist())
-
-        before = len(gt_df)
-        gt_df = gt_df[~gt_df["image"].astype(str).isin(exclude_images)].copy()
-        after = len(gt_df)
-
-        print(f"[INFO] exclude_seed_csv: {exclude_seed_csv}")
-        print(
-            f"[INFO] excluded {before - after} images that were already used as seeds."
-        )
+    # 先排除旧 seed，再按类别随机抽；否则可能重复使用上一批 seed。
+    gt_df = exclude_images_by_id(gt_df, exclude_seed_csv, context="random mode")
 
     selected_rows = []
-
     for class_name in class_names:
         class_df = gt_df[gt_df["label"] == class_name].copy()
 
         if len(class_df) == 0:
-            print(
-                f"[WARN] class {class_name} has no available images after exclusion, skipped."
-            )
+            print(f"[WARN] class {class_name} has no available images, skipped.")
             continue
 
         if len(class_df) < num_seed_per_class:
@@ -332,32 +337,38 @@ def select_random_seeds_excluding_existing(
             )
 
         records = class_df.to_dict("records")
+        # random 模式才 shuffle；hard 模式故意不 shuffle，而是按 confidence 排序。
         rng.shuffle(records)
-
         selected_rows.extend(records[: min(num_seed_per_class, len(records))])
 
     return pd.DataFrame(selected_rows)
 
 
+# -----------------------------------------------------------------------------
+# Seed selection: hard mode
+# -----------------------------------------------------------------------------
+
+
 def build_classifier(arch, num_classes, device):
-    """
-    构建 ResNet，并替换最后 fc 层。
-    必须和 baseline 训练脚本保持一致。
-    """
+    """Build a ResNet classifier with a replaced final fc layer."""
+    # weights=None：这里加载的是你自己的 checkpoint，不使用 torchvision 预训练权重。
     model = models.__dict__[arch](weights=None)
 
-    if hasattr(model, "fc") and isinstance(model.fc, nn.Linear):
-        in_features = model.fc.in_features
-        model.fc = nn.Linear(in_features, num_classes)
-    else:
-        raise ValueError(f"当前脚本只支持带 model.fc 的 ResNet，当前模型={arch}")
+    if not (hasattr(model, "fc") and isinstance(model.fc, nn.Linear)):
+        raise ValueError(
+            f"Only ResNet models with model.fc are supported, got arch={arch}"
+        )
 
+    in_features = model.fc.in_features
+    model.fc = nn.Linear(in_features, num_classes)
     return model.to(device)
 
 
 def load_classifier_checkpoint(model, checkpoint_path, device):
+    """Load classifier weights from common checkpoint formats."""
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
+    # 兼容不同训练脚本保存 checkpoint 的常见 key 名。
     if "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
     elif "model_state_dict" in checkpoint:
@@ -372,10 +383,7 @@ def load_classifier_checkpoint(model, checkpoint_path, device):
 
 @torch.no_grad()
 def export_sample_confidences(model, loader, class_names, device):
-    """
-    输出每个样本的真实类别置信度。
-    hard sample 用 confidence 排序，不用 pred_confidence 排序。
-    """
+    """Compute true-class confidence for each image; lower means harder."""
     rows = []
     model.eval()
 
@@ -384,15 +392,16 @@ def export_sample_confidences(model, loader, class_names, device):
         labels = labels.to(device, non_blocking=True)
 
         logits = model(images)
+        # 用 softmax 概率衡量分类器置信度；hard 样本看真实类别概率，而不是最大预测概率。
         probs = torch.softmax(logits, dim=1)
 
         pred_conf, preds = probs.max(dim=1)
+        # true_conf 越低，说明分类器越不相信真实标签，这张图越 hard。
         true_conf = probs.gather(1, labels.view(-1, 1)).squeeze(1)
 
         for i in range(images.size(0)):
             label_idx = int(labels[i].item())
             pred_idx = int(preds[i].item())
-
             rows.append(
                 {
                     "image": str(image_ids[i]),
@@ -408,7 +417,7 @@ def export_sample_confidences(model, loader, class_names, device):
 
     conf_df = pd.DataFrame(rows)
 
-    # 正常 ISIC 数据一张图应该只出现一次。这里主动去重，避免后面 seed 假性变多。
+    # A normal ISIC image should appear once. Deduplicate defensively.
     before = len(conf_df)
     conf_df = conf_df.sort_values("confidence", ascending=True).drop_duplicates(
         subset=["image"], keep="first"
@@ -423,20 +432,16 @@ def export_sample_confidences(model, loader, class_names, device):
 
 
 def select_hard_per_class(conf_df, class_names, hard_ratio):
-    """
-    保存用 hard_df：
-    每个类别内部，按真实类别 confidence 从低到高排序，
-    只取最低 hard_ratio。
-    """
+    """Save-facing hard pool: lowest hard_ratio true-class confidence samples per class."""
     hard_rows = []
 
     for class_name in class_names:
         class_df = conf_df[conf_df["label"] == class_name].copy()
-
         if len(class_df) == 0:
             print(f"[WARN] class {class_name} has no samples, skipped.")
             continue
 
+        # 每类单独排序，防止大类把小类的 hard 样本挤掉。
         class_df = class_df.sort_values("confidence", ascending=True)
         k = max(1, int(len(class_df) * hard_ratio))
         hard_rows.append(class_df.iloc[:k])
@@ -461,22 +466,17 @@ def select_hard_seeds_from_confidences(
     expand_hard_pool_if_needed,
 ):
     """
-    采样用 seed_df：
+    Sampling-facing hard seeds.
 
-    每个类别内部，按真实类别 confidence 从低到高排序。
-    默认只允许从最低 hard_ratio 的候选池中选 seed。
+    Deterministic rule:
+    - sort each class by true-class confidence ascending;
+    - build the allowed pool from hard_ratio;
+    - optionally expand that pool to num_seed_per_class;
+    - take the lowest-confidence seeds from the allowed pool.
 
-    当前逻辑：
-    1. 不再随机 shuffle；
-    2. 直接选择 confidence 最低的 num_seed_per_class 张；
-    3. 如果最低 hard_ratio 候选池不足 num_seed_per_class，
-       且 expand_hard_pool_if_needed=True，则候选池扩大到 num_seed_per_class；
-    4. 如果 expand_hard_pool_if_needed=False，则最多只能选 hard_ratio 池里的样本数。
-
-    注意：
-    hard_samples.csv 仍然保存原始 hard_ratio 的样本；
-    expand 只影响本次采样 seed，不改变 hard_samples.csv 的定义。
+    The seed argument is kept for API compatibility; hard selection itself is not shuffled.
     """
+    _ = seed
     selected_rows = []
 
     print("\n[INFO] hard seed selection stats:")
@@ -487,28 +487,24 @@ def select_hard_seeds_from_confidences(
 
     for class_name in class_names:
         class_df = conf_df[conf_df["label"] == class_name].copy()
-
         if len(class_df) == 0:
             print(f"{class_name:<8} {0:>8} {0:>11} {0:>10} {0:>10} {'no':>9}")
             continue
 
-        # confidence 越低，样本越 hard
+        # 排序后的前面就是最 hard 的样本；这里不随机，保证 hard seed 可解释、可复现。
         class_df = class_df.sort_values("confidence", ascending=True)
-
         ratio_k = max(1, int(len(class_df) * hard_ratio))
 
         if expand_hard_pool_if_needed:
-            used_k = max(ratio_k, num_seed_per_class)
-            used_k = min(used_k, len(class_df))
+            # 允许突破 hard_ratio，尽量补够 num_seed_per_class，但不能超过该类总数。
+            used_k = min(max(ratio_k, num_seed_per_class), len(class_df))
         else:
+            # 不 expand 时严格受 hard_ratio 限制；seed 不够也不会报错，只会少选。
             used_k = ratio_k
 
-        # 先得到允许使用的 hard pool
         hard_pool = class_df.iloc[:used_k].copy()
-
-        # 不再 shuffle，直接取 confidence 最低的前 num_seed_per_class 张
+        # 最终 seed 仍然从允许池里取最低 confidence 的前 num_seed_per_class 张。
         selected = hard_pool.iloc[: min(num_seed_per_class, len(hard_pool))]
-
         selected_rows.extend(selected.to_dict("records"))
 
         expanded = "yes" if used_k > ratio_k else "no"
@@ -535,74 +531,54 @@ def select_hard_seeds_from_confidences(
     ]
 
 
-def export_confidences_and_select_hard_seeds(args, device, sampling_root):
-    """
-    hard 模式入口：
-    1. 计算全部训练样本的真实类别置信度 conf_df；
-    2. 保存 all_confidences.csv；
-    3. 保存 hard_samples.csv；
-    4. 直接用内存里的 conf_df 选择 seed_df，不重新读取磁盘。
-    """
-    if args.classifier_checkpoint is None:
-        raise ValueError("--seed_strategy hard requires --classifier_checkpoint.")
+def build_classifier_loader(args, device):
+    """Build the ISIC dataset and DataLoader used for hard-sample mining."""
+    # 必须和 baseline 分类器训练/验证时的预处理一致，否则 hard 分数没有意义。
+    _, eval_transform = build_transforms(args)
 
-    if not (0 < args.hard_ratio <= 1):
-        raise ValueError(f"--hard_ratio must be in (0, 1], got {args.hard_ratio}")
-
-    eval_transform = transforms.Compose(
-        [
-            transforms.Resize((args.classifier_resolution, args.classifier_resolution)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
-        ]
-    )
-
+    # Dataset 负责返回 image tensor、label、image_id；class_columns 用作类别顺序。
     dataset = ISICResNetDataset(
         gt_csv_path=args.gt_csv_path,
         img_dir=args.img_dir,
         transform=eval_transform,
     )
 
+    loader = DataLoader(
+        dataset,
+        batch_size=args.classifier_batch_size,
+        shuffle=False,  # hard 分数导出不需要打乱，方便排查 image_id 对应关系。
+        num_workers=args.workers,
+        pin_memory=(device.type == "cuda"),
+    )
+
+    return dataset, loader
+
+
+def export_confidences_and_select_hard_seeds(args, device, sampling_root):
+    """Hard-mode entry: export confidence CSVs and return the selected seed DataFrame."""
+    if args.classifier_checkpoint is None:
+        raise ValueError("--seed_strategy hard requires --classifier_checkpoint.")
+    if not (0 < args.hard_ratio <= 1):
+        raise ValueError(f"--hard_ratio must be in (0, 1], got {args.hard_ratio}")
+
+    dataset, loader = build_classifier_loader(args, device)
     class_names = dataset.class_columns
     num_classes = len(class_names)
 
     print(f"[INFO] classifier class_names: {class_names}")
     print(f"[INFO] classifier dataset size: {len(dataset)}")
 
-    loader = DataLoader(
-        dataset,
-        batch_size=args.classifier_batch_size,
-        shuffle=False,
-        num_workers=args.workers,
-        pin_memory=(device.type == "cuda"),
-    )
+    model = build_classifier(args.classifier_arch, num_classes, device)
+    model = load_classifier_checkpoint(model, args.classifier_checkpoint, device)
 
-    model = build_classifier(
-        arch=args.classifier_arch,
-        num_classes=num_classes,
-        device=device,
-    )
-    model = load_classifier_checkpoint(
-        model=model,
-        checkpoint_path=args.classifier_checkpoint,
-        device=device,
-    )
+    conf_df = export_sample_confidences(model, loader, class_names, device)
+    # hard 模式也支持排除旧 seed：排除发生在 hard pool 计算之前。
+    conf_df = exclude_images_by_id(conf_df, args.exclude_seed_csv, context="hard mode")
+    if len(conf_df) == 0:
+        raise ValueError("No samples left after applying exclude_seed_csv.")
 
-    conf_df = export_sample_confidences(
-        model=model,
-        loader=loader,
-        class_names=class_names,
-        device=device,
-    )
-
-    hard_df = select_hard_per_class(
-        conf_df=conf_df,
-        class_names=class_names,
-        hard_ratio=args.hard_ratio,
-    )
+    # hard_df 是“记录用”的 hard pool；seed_df 是“本次采样用”的最终 seed。
+    hard_df = select_hard_per_class(conf_df, class_names, args.hard_ratio)
 
     ratio_tag = str(args.hard_ratio).replace(".", "p")
     all_csv = os.path.join(sampling_root, f"hard_all_confidences_ratio_{ratio_tag}.csv")
@@ -610,7 +586,6 @@ def export_confidences_and_select_hard_seeds(args, device, sampling_root):
 
     conf_df.to_csv(all_csv, index=False)
     hard_df.to_csv(hard_csv, index=False)
-
     print(f"[INFO] saved all confidences to: {all_csv}")
     print(f"[INFO] saved hard samples to: {hard_csv}")
 
@@ -622,27 +597,29 @@ def export_confidences_and_select_hard_seeds(args, device, sampling_root):
         seed=args.seed,
         expand_hard_pool_if_needed=args.expand_hard_pool_if_needed,
     )
-
     return seed_df, class_names
 
 
+# -----------------------------------------------------------------------------
+# Stable Diffusion LoRA img2img pipeline
+# -----------------------------------------------------------------------------
+
+
 def build_sd_lora_unet(args, device, weight_dtype):
-    """
-    构造训练时的 sd_lora UNet，并严格检查 LoRA checkpoint 是否匹配。
-    """
+    """Build the base UNet, attach a LoRA adapter, and load the trained LoRA weights."""
     if LoraConfig is None:
         raise ImportError(
             "sd_lora img2img requires peft. Please install: pip install peft"
         )
 
-    # 1) 先加载底模 UNet
+    # 先加载底模 UNet，再挂 LoRA adapter；底模必须和训练 LoRA 时一致。
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="unet",
     )
     unet.requires_grad_(False)
 
-    # 2) 按当前参数创建 LoRA adapter
+    # adapter 结构必须和训练时一致，否则 checkpoint key 会对不上。
     lora_config = LoraConfig(
         r=args.lora_rank,
         lora_alpha=args.lora_alpha,
@@ -652,54 +629,42 @@ def build_sd_lora_unet(args, device, weight_dtype):
     )
     unet.add_adapter(lora_config)
 
-    # 3) 读取 checkpoint
+    # 先在 CPU 读权重，检查通过后再移动到目标 device/dtype。
     ckpt = torch.load(args.sd_lora_ckpt_path, map_location="cpu")
     if "model_state_dict" not in ckpt:
         raise ValueError(
-            "checkpoint 中没有 'model_state_dict'，这个文件不像是你当前脚本期望的 LoRA 权重格式。"
+            "checkpoint does not contain 'model_state_dict'; it may not be your sd_lora checkpoint."
         )
 
     state_dict = ckpt["model_state_dict"]
-
-    # 4) 只要没有 LoRA 相关参数，直接判死刑
     lora_keys = [k for k in state_dict.keys() if "lora" in k.lower()]
     if len(lora_keys) == 0:
-        raise ValueError(
-            "No LoRA keys found in checkpoint['model_state_dict'].\n"
-            "这个 checkpoint 很可能不是 sd_lora 训练得到的权重。"
-        )
+        raise ValueError("No LoRA keys found in checkpoint['model_state_dict'].")
 
-    # 5) 加载权重
     missing, unexpected = unet.load_state_dict(state_dict, strict=False)
-
-    # 6) 只关注 LoRA 相关的 missing / unexpected
+    # 底模参数 missing/unexpected 不重要；这里专门检查 LoRA 相关 key。
     missing_lora = [k for k in missing if "lora" in k.lower()]
     unexpected_lora = [k for k in unexpected if "lora" in k.lower()]
 
-    # 7) 只要 LoRA key 对不上，就直接报错，不要继续跑
     if len(missing_lora) > 0 or len(unexpected_lora) > 0:
         raise ValueError(
-            "LoRA checkpoint 与当前 UNet adapter 结构不匹配。\n"
+            "LoRA checkpoint does not match the current UNet adapter.\n"
             f"missing_lora_keys={missing_lora}\n"
             f"unexpected_lora_keys={unexpected_lora}\n"
-            "请检查：\n"
-            "1) pretrained_model_name_or_path 是否和训练时一致；\n"
-            "2) lora_rank / lora_alpha / lora_target_modules 是否和训练时一致；\n"
-            "3) 这个 checkpoint 是否真的是当前训练脚本保存的 LoRA 权重。"
+            "Check pretrained_model_name_or_path, lora_rank, lora_alpha, and lora_target_modules."
         )
 
-    # 8) 统计一下当前模型中 LoRA 参数数量，便于确认不是空加载
-    loaded_lora_param_count = 0
-    loaded_lora_tensor_count = 0
+    lora_tensor_count = 0
+    lora_param_count = 0
     for name, param in unet.named_parameters():
         if "lora" in name.lower():
-            loaded_lora_tensor_count += 1
-            loaded_lora_param_count += param.numel()
+            lora_tensor_count += 1
+            lora_param_count += param.numel()
 
     print(f"[INFO] loaded sd_lora checkpoint: {args.sd_lora_ckpt_path}")
     print(f"[INFO] lora keys in checkpoint: {len(lora_keys)}")
-    print(f"[INFO] loaded LoRA tensors in UNet: {loaded_lora_tensor_count}")
-    print(f"[INFO] loaded LoRA params in UNet: {loaded_lora_param_count}")
+    print(f"[INFO] loaded LoRA tensors in UNet: {lora_tensor_count}")
+    print(f"[INFO] loaded LoRA params in UNet: {lora_param_count}")
 
     unet.to(device=device, dtype=weight_dtype)
     unet.eval()
@@ -707,9 +672,7 @@ def build_sd_lora_unet(args, device, weight_dtype):
 
 
 def build_img2img_pipe(args, device):
-    """
-    组装 StableDiffusionImg2ImgPipeline。
-    """
+    """Assemble StableDiffusionImg2ImgPipeline with the trained LoRA UNet."""
     weight_dtype = get_weight_dtype(args.mixed_precision)
 
     tokenizer = CLIPTokenizer.from_pretrained(
@@ -724,12 +687,12 @@ def build_img2img_pipe(args, device):
         args.pretrained_model_name_or_path,
         subfolder="vae",
     ).to(device=device, dtype=weight_dtype)
-    scheduler = DDPMScheduler.from_pretrained(
+    # DDIM 是常见 img2img 推理 scheduler；比 DDPM 更适合这里的采样使用。
+    scheduler = DDIMScheduler.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="scheduler",
     )
-
-    unet = build_sd_lora_unet(args=args, device=device, weight_dtype=weight_dtype)
+    unet = build_sd_lora_unet(args, device, weight_dtype)
 
     pipe = StableDiffusionImg2ImgPipeline(
         vae=vae,
@@ -737,7 +700,7 @@ def build_img2img_pipe(args, device):
         tokenizer=tokenizer,
         unet=unet,
         scheduler=scheduler,
-        safety_checker=None,
+        safety_checker=None,  # 医学研究采样通常不需要 NSFW safety checker。
         feature_extractor=None,
         requires_safety_checker=False,
     )
@@ -746,6 +709,7 @@ def build_img2img_pipe(args, device):
     pipe.set_progress_bar_config(disable=True)
 
     try:
+        # 降低 VAE 显存压力；失败也不影响主流程。
         pipe.enable_vae_slicing()
     except Exception:
         pass
@@ -753,29 +717,24 @@ def build_img2img_pipe(args, device):
     return pipe
 
 
+# -----------------------------------------------------------------------------
+# Sampling
+# -----------------------------------------------------------------------------
+
+
 def load_init_image(img_dir, image_id, resolution):
-    """
-    读取 seed 图片，并 resize 到生成分辨率。
-    """
+    """Load a seed image and resize it to the generation resolution."""
+    # ISIC 原图文件名按 image_id.jpg 查找；如果你的数据是 png，需要改这里。
     img_path = os.path.join(img_dir, f"{image_id}.jpg")
     if not os.path.isfile(img_path):
         raise FileNotFoundError(f"Image not found: {img_path}")
 
     image = Image.open(img_path).convert("RGB")
-    image = image.resize((resolution, resolution), resample=Image.BILINEAR)
-    return image
-
-
-def stable_int_hash(text, modulo):
-    """
-    Python 内置 hash() 每个进程可能不同。
-    这里用 md5 让同一个 image_id 的生成 seed 跨运行稳定。
-    """
-    value = int(hashlib.md5(str(text).encode("utf-8")).hexdigest(), 16)
-    return value % modulo
+    return image.resize((resolution, resolution), resample=Image.BILINEAR)
 
 
 def build_sampling_tasks(seed_df, args):
+    """Expand selected seed images into per-augmentation sampling tasks."""
     tasks = []
 
     for row in seed_df.to_dict("records"):
@@ -783,13 +742,14 @@ def build_sampling_tasks(seed_df, args):
         class_name = str(row["label"])
         label_idx = int(row["label_idx"])
 
+        # label 必须能找到 prompt；否则生成时没有类别文本条件。
         if class_name not in ISIC_PROMPTS:
             raise ValueError(
-                f"Unknown class_name={class_name}. "
-                f"Expected one of {list(ISIC_PROMPTS.keys())}"
+                f"Unknown class_name={class_name}. Expected one of {list(ISIC_PROMPTS.keys())}"
             )
 
         for aug_idx in range(args.num_aug_per_seed):
+            # 每张 seed 的每个 aug_idx 使用确定性 seed，保证重复运行可复现。
             gen_seed = (
                 args.seed
                 + label_idx * 100000
@@ -815,7 +775,59 @@ def build_sampling_tasks(seed_df, args):
     return tasks
 
 
+def build_batch_inputs(batch_tasks, args, device):
+    """Prepare prompts, PIL init images, and per-sample torch.Generator objects."""
+    prompts = []
+    init_images = []
+    generators = []
+
+    for task in batch_tasks:
+        # Diffusers img2img 接收 PIL 图像列表，不是已经归一化的 tensor。
+        init_images.append(
+            load_init_image(
+                img_dir=args.img_dir,
+                image_id=task["image_id"],
+                resolution=args.resolution,
+            )
+        )
+        prompts.append(task["prompt"])
+        # 每个样本一个 Generator，避免同一 batch 内所有图共用随机噪声。
+        generators.append(torch.Generator(device=device).manual_seed(task["gen_seed"]))
+
+    return prompts, init_images, generators
+
+
+def make_output_path(run_dir, class_name, image_id, aug_idx):
+    """Use a short filename; full metadata is saved in metadata_*.csv."""
+    class_out_dir = os.path.join(run_dir, class_name)
+    # 按类别分文件夹，后续可直接统计每类生成结果。
+    os.makedirs(class_out_dir, exist_ok=True)
+    # 文件名保持短；strength/guidance/seed 等完整信息保存在 metadata CSV。
+    out_name = f"{image_id}_aug{aug_idx:03d}.png"
+    return os.path.join(class_out_dir, out_name)
+
+
+def build_metadata_row(task, args, out_path):
+    return {
+        "source_image": task["image_id"],
+        "label": task["class_name"],
+        "label_idx": task["label_idx"],
+        "seed_strategy": args.seed_strategy,
+        "strength": args.strength,
+        "guidance_scale": args.guidance_scale,
+        "num_inference_steps": args.num_inference_steps,
+        "aug_idx": task["aug_idx"],
+        "generator_seed": task["gen_seed"],
+        "output_path": out_path,
+        "source_confidence": task["source_confidence"],
+        "pred": task["pred"],
+        "pred_confidence": task["pred_confidence"],
+        "correct": task["correct"],
+    }
+
+
 def run_img2img_sampling(args, pipe, tasks, run_dir, device):
+    """Run batched Stable Diffusion img2img sampling and save images plus metadata."""
     metadata_rows = []
 
     for start in tqdm(
@@ -823,104 +835,42 @@ def run_img2img_sampling(args, pipe, tasks, run_dir, device):
         desc=f"img2img batch sampling [{args.seed_strategy}]",
     ):
         batch_tasks = tasks[start : start + args.batch_size_sampling]
+        prompts, init_images, generators = build_batch_inputs(batch_tasks, args, device)
 
-        prompts = []
-        init_images = []
-        generators = []
-
-        for task in batch_tasks:
-            init_image = load_init_image(
-                img_dir=args.img_dir,
-                image_id=task["image_id"],
-                resolution=args.resolution,
-            )
-
-            prompts.append(task["prompt"])
-            init_images.append(init_image)
-            generators.append(
-                torch.Generator(device=device).manual_seed(task["gen_seed"])
-            )
-
+        # 这一步就是 SDEdit-style img2img：原图 latent 加噪，再按 prompt 反向去噪。
         result = pipe(
             prompt=prompts,
             image=init_images,
-            strength=args.strength,
-            guidance_scale=args.guidance_scale,
+            strength=args.strength,  # 越大越偏离原图；医学增强不宜盲目设太高。
+            guidance_scale=args.guidance_scale,  # 文本条件引导强度。
             num_inference_steps=args.num_inference_steps,
             generator=generators,
         )
 
         for task, out_image in zip(batch_tasks, result.images):
-            image_id = task["image_id"]
-            class_name = task["class_name"]
-            label_idx = task["label_idx"]
-            aug_idx = task["aug_idx"]
-
-            class_out_dir = os.path.join(run_dir, class_name)
-            os.makedirs(class_out_dir, exist_ok=True)
-
-            out_name = (
-                f"{image_id}"
-                f"_label-{class_name}"
-                f"_strategy-{args.seed_strategy}"
-                f"_strength-{args.strength}"
-                f"_gs-{args.guidance_scale}"
-                f"_aug-{aug_idx:03d}.png"
+            out_path = make_output_path(
+                run_dir=run_dir,
+                class_name=task["class_name"],
+                image_id=task["image_id"],
+                aug_idx=task["aug_idx"],
             )
-
-            out_path = os.path.join(class_out_dir, out_name)
             out_image.save(out_path)
-
-            metadata_rows.append(
-                {
-                    "source_image": image_id,
-                    "label": class_name,
-                    "label_idx": label_idx,
-                    "seed_strategy": args.seed_strategy,
-                    "strength": args.strength,
-                    "guidance_scale": args.guidance_scale,
-                    "num_inference_steps": args.num_inference_steps,
-                    "aug_idx": aug_idx,
-                    "generator_seed": task["gen_seed"],
-                    "output_path": out_path,
-                    "source_confidence": task["source_confidence"],
-                    "pred": task["pred"],
-                    "pred_confidence": task["pred_confidence"],
-                    "correct": task["correct"],
-                }
-            )
+            metadata_rows.append(build_metadata_row(task, args, out_path))
 
     return pd.DataFrame(metadata_rows)
 
 
-def main():
-    args = parse_args()
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
 
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
 
-    if torch.cuda.is_available():
-        device = torch.device(f"cuda:{args.gpu}")
-    else:
-        device = torch.device("cpu")
-
-    sampling_root = resolve_sampling_root(args)
-    run_dir = build_run_dir(args, sampling_root)
-
-    os.makedirs(sampling_root, exist_ok=True)
-
-    if args.overwrite_run_dir and os.path.isdir(run_dir):
-        shutil.rmtree(run_dir)
-    os.makedirs(run_dir, exist_ok=True)
-
-    print(f"[INFO] sampling_root: {sampling_root}")
-    print(f"[INFO] run_dir: {run_dir}")
-    print(f"[INFO] device: {device}")
-
+def select_seed_dataframe(args, device, sampling_root):
+    """Dispatch to random or hard seed selection."""
     if args.seed_strategy == "random":
         gt_df, class_names = read_isic_gt(args.gt_csv_path)
         print(f"[INFO] class_names from CSV: {class_names}")
-
+        # random 模式：从 one-hot GT 表中每类随机抽 seed。
         seed_df = select_random_seeds_excluding_existing(
             gt_df=gt_df,
             class_names=class_names,
@@ -928,44 +878,66 @@ def main():
             seed=args.seed,
             exclude_seed_csv=args.exclude_seed_csv,
         )
-    else:
-        seed_df, class_names = export_confidences_and_select_hard_seeds(
-            args=args,
-            device=device,
-            sampling_root=sampling_root,
-        )
+        return seed_df, class_names
 
-    if len(seed_df) == 0:
-        raise ValueError("No seed images selected.")
+    # hard 模式：先跑分类器导出 confidence，再按低 confidence 选 seed。
+    return export_confidences_and_select_hard_seeds(args, device, sampling_root)
 
-    seed_csv_out = os.path.join(run_dir, f"selected_seeds_{args.seed_strategy}.csv")
-    seed_df.to_csv(seed_csv_out, index=False)
-    print(f"[INFO] saved selected seeds to: {seed_csv_out}")
 
+def print_seed_summary(seed_df):
     print("\n[INFO] selected seeds per class:")
     print(seed_df.groupby("label").size())
     print("\n[INFO] unique selected seed images per class:")
     print(seed_df.groupby("label")["image"].nunique())
 
+
+def main():
+    args = parse_args()
+
+    # 控制 Python 和 PyTorch 的随机性；生成阶段还会为每张图单独构造 Generator。
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
+    sampling_root, run_dir = make_output_dirs(args)
+
+    print(f"[INFO] sampling_root: {sampling_root}")
+    print(f"[INFO] run_dir: {run_dir}")
+    print(f"[INFO] device: {device}")
+
+    # seed_df 是后续生成任务的唯一来源；为空就没有任何图可生成。
+    seed_df, _ = select_seed_dataframe(args, device, sampling_root)
+
+    # 排除指定类别，例如 --exclude_classes MEL NV
+    if len(args.exclude_classes) > 0:
+        before = len(seed_df)
+        seed_df = seed_df[~seed_df["label"].isin(args.exclude_classes)].copy()
+        after = len(seed_df)
+
+        print(f"[INFO] exclude_classes: {args.exclude_classes}")
+        print(f"[INFO] excluded {before - after} seed images by class.")
+
+    if len(seed_df) == 0:
+        raise ValueError("No seed images selected after applying exclude_classes.")
+
+    seed_csv_out = os.path.join(run_dir, f"selected_seeds_{args.seed_strategy}.csv")
+    seed_df.to_csv(seed_csv_out, index=False)
+    print(f"[INFO] saved selected seeds to: {seed_csv_out}")
+    print_seed_summary(seed_df)
+
+    # 一张 seed 会扩展成 num_aug_per_seed 个任务。
     tasks = build_sampling_tasks(seed_df, args)
     print(f"[INFO] total generation tasks: {len(tasks)}")
 
+    # pipeline 只构建一次；真正耗时的是下面的批量 img2img 采样。
     pipe = build_img2img_pipe(args, device=device)
-
-    meta_df = run_img2img_sampling(
-        args=args,
-        pipe=pipe,
-        tasks=tasks,
-        run_dir=run_dir,
-        device=device,
-    )
+    meta_df = run_img2img_sampling(args, pipe, tasks, run_dir, device)
 
     meta_path = os.path.join(run_dir, f"metadata_{args.seed_strategy}.csv")
     meta_df.to_csv(meta_path, index=False)
 
     print("\n[DONE] generated images per class:")
     print(meta_df.groupby("label").size())
-
     print(f"[DONE] generated images: {len(meta_df)}")
     print(f"[DONE] metadata saved to: {meta_path}")
 

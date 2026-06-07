@@ -1,0 +1,115 @@
+{
+    "overall": {
+        "accuracy": 0.8963730569948186,
+        "balanced_multiclass_accuracy": 0.7133969108707784,
+        "macro_recall": 0.7133969108707784,
+        "macro_precision": 0.7330929987703356,
+        "macro_f1": 0.7218414626309363,
+        "multiclass_macro_auc_ovr": 0.9711033439329567,
+        "mean_auc_all_diagnoses": 0.9711033439329567,
+        "mean_average_precision_all_diagnoses": 0.7770299956119927,
+        "mean_sensitivity": 0.7133969108707784,
+        "mean_specificity": 0.9777989406446307,
+        "mean_accuracy": 0.9703923019985197,
+        "mean_f1": 0.7218414626309363,
+        "mean_ppv": 0.7330929987703356,
+        "mean_npv": 0.9787846858178771,
+        "melanoma_auc80": 0.9554263565891472,
+        "malignant_vs_benign_auc": 0.9691885295912142,
+        "mcc": 0.8151525880925452,
+        "cohen_kappa": 0.8147170354725676,
+        "mean_youden_index": 0.6911958515154092
+    },
+    "per_class": {
+        "MEL": {
+            "sensitivity": 0.7619047619047619,
+            "specificity": 0.9941860465116279,
+            "accuracy": 0.9689119170984456,
+            "auc": 0.9734219269102989,
+            "average_precision": 0.8188738078749738,
+            "f1_score": 0.8421052631578947,
+            "ppv": 0.9411764705882353,
+            "npv": 0.9715909090909091,
+            "auc80": 0.9554263565891472,
+            "youden_index": 0.7560908084163898
+        },
+        "NV": {
+            "sensitivity": 0.967479674796748,
+            "specificity": 0.9285714285714286,
+            "accuracy": 0.9533678756476683,
+            "auc": 0.9876887340301974,
+            "average_precision": 0.9923210809078563,
+            "f1_score": 0.9635627530364373,
+            "ppv": 0.9596774193548387,
+            "npv": 0.9420289855072463,
+            "auc80": NaN,
+            "youden_index": 0.8960511033681766
+        },
+        "BCC": {
+            "sensitivity": 0.8666666666666667,
+            "specificity": 0.9887640449438202,
+            "accuracy": 0.9792746113989638,
+            "auc": 0.9928838951310862,
+            "average_precision": 0.9453439153439154,
+            "f1_score": 0.8666666666666667,
+            "ppv": 0.8666666666666667,
+            "npv": 0.9887640449438202,
+            "auc80": NaN,
+            "youden_index": 0.8554307116104869
+        },
+        "AKIEC": {
+            "sensitivity": 0.625,
+            "specificity": 0.9837837837837838,
+            "accuracy": 0.9689119170984456,
+            "auc": 0.9175675675675676,
+            "average_precision": 0.6092105494582806,
+            "f1_score": 0.625,
+            "ppv": 0.625,
+            "npv": 0.9837837837837838,
+            "auc80": NaN,
+            "youden_index": 0.608783783783784
+        },
+        "BKL": {
+            "sensitivity": 0.7727272727272727,
+            "specificity": 0.9649122807017544,
+            "accuracy": 0.9430051813471503,
+            "auc": 0.941786283891547,
+            "average_precision": 0.8234606156989225,
+            "f1_score": 0.7555555555555555,
+            "ppv": 0.7391304347826086,
+            "npv": 0.9705882352941176,
+            "auc80": NaN,
+            "youden_index": 0.7376395534290272
+        },
+        "DF": {
+            "sensitivity": 0.0,
+            "specificity": 0.984375,
+            "accuracy": 0.9792746113989638,
+            "auc": 0.984375,
+            "average_precision": 0.25,
+            "f1_score": 0.0,
+            "ppv": 0.0,
+            "npv": 0.9947368421052631,
+            "auc80": NaN,
+            "youden_index": -0.015625
+        },
+        "VASC": {
+            "sensitivity": 1.0,
+            "specificity": 1.0,
+            "accuracy": 1.0,
+            "auc": 1.0,
+            "average_precision": 1.0,
+            "f1_score": 1.0,
+            "ppv": 1.0,
+            "npv": 1.0,
+            "auc80": NaN,
+            "youden_index": 1.0
+        }
+    },
+    "malignant_definition_used": [
+        "MEL",
+        "BCC",
+        "AKIEC"
+    ],
+    "val_loss": 0.5653341817114638
+}

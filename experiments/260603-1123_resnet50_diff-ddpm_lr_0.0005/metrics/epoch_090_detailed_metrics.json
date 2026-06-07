@@ -1,0 +1,115 @@
+{
+    "overall": {
+        "accuracy": 0.8808290155440415,
+        "balanced_multiclass_accuracy": 0.7070734724044829,
+        "macro_recall": 0.7070734724044829,
+        "macro_precision": 0.7326424319727891,
+        "macro_f1": 0.7149906254752254,
+        "multiclass_macro_auc_ovr": 0.9808557959947354,
+        "mean_auc_all_diagnoses": 0.9808557959947354,
+        "mean_average_precision_all_diagnoses": 0.7718789284918778,
+        "mean_sensitivity": 0.7070734724044829,
+        "mean_specificity": 0.970475954330562,
+        "mean_accuracy": 0.9659511472982976,
+        "mean_f1": 0.7149906254752255,
+        "mean_ppv": 0.7326424319727891,
+        "mean_npv": 0.9759596696144989,
+        "melanoma_auc80": 0.9451827242524917,
+        "malignant_vs_benign_auc": 0.9553081147040878,
+        "mcc": 0.784740820841998,
+        "cohen_kappa": 0.782902137232846,
+        "mean_youden_index": 0.6775494267350448
+    },
+    "per_class": {
+        "MEL": {
+            "sensitivity": 0.5714285714285714,
+            "specificity": 0.9883720930232558,
+            "accuracy": 0.9430051813471503,
+            "auc": 0.9609634551495017,
+            "average_precision": 0.7970258381410464,
+            "f1_score": 0.6857142857142857,
+            "ppv": 0.8571428571428571,
+            "npv": 0.9497206703910615,
+            "auc80": 0.9451827242524917,
+            "youden_index": 0.5598006644518272
+        },
+        "NV": {
+            "sensitivity": 0.967479674796748,
+            "specificity": 0.8714285714285714,
+            "accuracy": 0.9326424870466321,
+            "auc": 0.9816492450638792,
+            "average_precision": 0.9895661576630538,
+            "f1_score": 0.9482071713147411,
+            "ppv": 0.9296875,
+            "npv": 0.9384615384615385,
+            "auc80": NaN,
+            "youden_index": 0.8389082462253195
+        },
+        "BCC": {
+            "sensitivity": 0.9333333333333333,
+            "specificity": 0.9887640449438202,
+            "accuracy": 0.9844559585492227,
+            "auc": 0.9921348314606742,
+            "average_precision": 0.8954070727983772,
+            "f1_score": 0.9032258064516129,
+            "ppv": 0.875,
+            "npv": 0.9943502824858758,
+            "auc80": NaN,
+            "youden_index": 0.9220973782771535
+        },
+        "AKIEC": {
+            "sensitivity": 0.75,
+            "specificity": 0.9837837837837838,
+            "accuracy": 0.9740932642487047,
+            "auc": 0.9777027027027028,
+            "average_precision": 0.7069139194139193,
+            "f1_score": 0.7058823529411765,
+            "ppv": 0.6666666666666666,
+            "npv": 0.9891304347826086,
+            "auc80": NaN,
+            "youden_index": 0.733783783783784
+        },
+        "BKL": {
+            "sensitivity": 0.7272727272727273,
+            "specificity": 0.9766081871345029,
+            "accuracy": 0.9481865284974094,
+            "auc": 0.9691653375863902,
+            "average_precision": 0.7642395114267475,
+            "f1_score": 0.761904761904762,
+            "ppv": 0.8,
+            "npv": 0.9653179190751445,
+            "auc80": NaN,
+            "youden_index": 0.7038809144072302
+        },
+        "DF": {
+            "sensitivity": 0.0,
+            "specificity": 0.984375,
+            "accuracy": 0.9792746113989638,
+            "auc": 0.984375,
+            "average_precision": 0.25,
+            "f1_score": 0.0,
+            "ppv": 0.0,
+            "npv": 0.9947368421052631,
+            "auc80": NaN,
+            "youden_index": -0.015625
+        },
+        "VASC": {
+            "sensitivity": 1.0,
+            "specificity": 1.0,
+            "accuracy": 1.0,
+            "auc": 1.0,
+            "average_precision": 1.0,
+            "f1_score": 1.0,
+            "ppv": 1.0,
+            "npv": 1.0,
+            "auc80": NaN,
+            "youden_index": 1.0
+        }
+    },
+    "malignant_definition_used": [
+        "MEL",
+        "BCC",
+        "AKIEC"
+    ],
+    "val_loss": 0.5878126213587628
+}

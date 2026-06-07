@@ -124,11 +124,9 @@ def _build_sd_lora_unet(args):
         subfolder="unet",
     )
 
-    # LoRA 的核心：冻结 base UNet。
-    # 否则你就不是 LoRA 微调，而是在训练整个 UNet。
+    # 冻结 base UNet。
     model.requires_grad_(False)
 
-    # Diffusers / PEFT 常见写法：
     # init_lora_weights 可以是 True，也可以是 "gaussian"。
     init_lora_weights = (
         "gaussian" if getattr(args, "lora_init", "gaussian") == "gaussian" else True
@@ -153,7 +151,6 @@ def _build_sd_lora_unet(args):
         model.enable_gradient_checkpointing()
 
     # xFormers memory efficient attention：进一步省显存。
-    # 需要你的环境正确安装 xformers。
     if getattr(args, "sd_enable_xformers", False):
         model.enable_xformers_memory_efficient_attention()
 
@@ -344,10 +341,6 @@ def _build_pixel_ddpm_unet(args, num_classes):
     输入输出：
         sample shape = [B, 3, H, W]
 
-    注意：
-        这里仍然保留你原来的 resolution 分支：
-            - resolution > 128 使用更深的 UNet；
-            - resolution <= 128 使用默认 UNet。
     """
     num_class_embeds = _get_num_class_embeds(args, num_classes)
 

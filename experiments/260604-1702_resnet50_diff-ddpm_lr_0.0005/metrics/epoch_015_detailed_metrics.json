@@ -1,0 +1,115 @@
+{
+    "overall": {
+        "accuracy": 0.8652849740932642,
+        "balanced_multiclass_accuracy": 0.64635730123535,
+        "macro_recall": 0.64635730123535,
+        "macro_precision": 0.6850182599355532,
+        "macro_f1": 0.6594219983567321,
+        "multiclass_macro_auc_ovr": 0.9794507462556602,
+        "mean_auc_all_diagnoses": 0.9794507462556602,
+        "mean_average_precision_all_diagnoses": 0.7807010194840532,
+        "mean_sensitivity": 0.64635730123535,
+        "mean_specificity": 0.9703083751029528,
+        "mean_accuracy": 0.9615099925980755,
+        "mean_f1": 0.6594219983567321,
+        "mean_ppv": 0.6850182599355532,
+        "mean_npv": 0.9724737427141059,
+        "melanoma_auc80": 0.9227574750830565,
+        "malignant_vs_benign_auc": 0.9659853569249544,
+        "mcc": 0.7578886253182467,
+        "cohen_kappa": 0.7575962513888218,
+        "mean_youden_index": 0.6166656763383027
+    },
+    "per_class": {
+        "MEL": {
+            "sensitivity": 0.6666666666666666,
+            "specificity": 0.9709302325581395,
+            "accuracy": 0.9378238341968912,
+            "auc": 0.9526578073089701,
+            "average_precision": 0.8233073104779545,
+            "f1_score": 0.7,
+            "ppv": 0.7368421052631579,
+            "npv": 0.9597701149425287,
+            "auc80": 0.9227574750830565,
+            "youden_index": 0.637596899224806
+        },
+        "NV": {
+            "sensitivity": 0.959349593495935,
+            "specificity": 0.9,
+            "accuracy": 0.9378238341968912,
+            "auc": 0.9858304297328687,
+            "average_precision": 0.9930178852394708,
+            "f1_score": 0.9516129032258064,
+            "ppv": 0.944,
+            "npv": 0.9264705882352942,
+            "auc80": NaN,
+            "youden_index": 0.859349593495935
+        },
+        "BCC": {
+            "sensitivity": 0.8,
+            "specificity": 0.9831460674157303,
+            "accuracy": 0.9689119170984456,
+            "auc": 0.9880149812734083,
+            "average_precision": 0.8389074650839357,
+            "f1_score": 0.8000000000000002,
+            "ppv": 0.8,
+            "npv": 0.9831460674157303,
+            "auc80": NaN,
+            "youden_index": 0.7831460674157302
+        },
+        "AKIEC": {
+            "sensitivity": 0.75,
+            "specificity": 0.9783783783783784,
+            "accuracy": 0.9689119170984456,
+            "auc": 0.9587837837837838,
+            "average_precision": 0.4968462823725982,
+            "f1_score": 0.6666666666666665,
+            "ppv": 0.6,
+            "npv": 0.9890710382513661,
+            "auc80": NaN,
+            "youden_index": 0.7283783783783784
+        },
+        "BKL": {
+            "sensitivity": 0.6818181818181818,
+            "specificity": 0.9649122807017544,
+            "accuracy": 0.9326424870466321,
+            "auc": 0.9760765550239234,
+            "average_precision": 0.8128281932144137,
+            "f1_score": 0.6976744186046512,
+            "ppv": 0.7142857142857143,
+            "npv": 0.9593023255813954,
+            "auc80": NaN,
+            "youden_index": 0.6467304625199362
+        },
+        "DF": {
+            "sensitivity": 0.0,
+            "specificity": 0.9947916666666666,
+            "accuracy": 0.9896373056994818,
+            "auc": 0.9947916666666666,
+            "average_precision": 0.5,
+            "f1_score": 0.0,
+            "ppv": 0.0,
+            "npv": 0.9947916666666666,
+            "auc80": NaN,
+            "youden_index": -0.00520833333333337
+        },
+        "VASC": {
+            "sensitivity": 0.6666666666666666,
+            "specificity": 1.0,
+            "accuracy": 0.9948186528497409,
+            "auc": 1.0,
+            "average_precision": 1.0,
+            "f1_score": 0.8,
+            "ppv": 1.0,
+            "npv": 0.9947643979057592,
+            "auc80": NaN,
+            "youden_index": 0.6666666666666665
+        }
+    },
+    "malignant_definition_used": [
+        "MEL",
+        "BCC",
+        "AKIEC"
+    ],
+    "val_loss": 0.5750648740659724
+}

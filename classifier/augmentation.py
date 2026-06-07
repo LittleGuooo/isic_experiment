@@ -135,7 +135,6 @@ def build_augmented_train_dataset(
     print("\n开始构建训练数据集", flush=True)
 
     # 1) 只要 output_dir 里已经有合成图，就直接复用
-    #    这种情况不需要 ratios，也不需要 diffusion_checkpoint。
     has_existing_images = _has_existing_generated_images(output_dir, class_names)
 
     if has_existing_images:

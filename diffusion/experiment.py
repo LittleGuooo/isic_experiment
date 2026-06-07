@@ -30,19 +30,19 @@ def make_experiment_name(args):
 
 
 def create_experiment_folders(args):
-    """
-    创建实验目录。
+    if getattr(args, "exp_dir", None) is not None:
+        exp_dir = args.exp_dir
+        exp_name = os.path.basename(os.path.normpath(exp_dir))
+    else:
+        exp_name = make_experiment_name(args)
+        exp_dir = os.path.join(args.output_root, exp_name)
 
-    返回:
-        exp_folders: dict，供 runtime/train_loop/checkpoint 使用。
-    """
-    exp_name = make_experiment_name(args)
-
-    exp_dir = os.path.join(args.output_root, exp_name)
     checkpoints_dir = os.path.join(exp_dir, "checkpoints")
     samples_dir = os.path.join(exp_dir, "samples")
     eval_dir = os.path.join(exp_dir, "evaluation")
+    metrics_dir = os.path.join(exp_dir, "metrics")
 
+    os.makedirs(metrics_dir, exist_ok=True)
     os.makedirs(exp_dir, exist_ok=True)
     os.makedirs(checkpoints_dir, exist_ok=True)
     os.makedirs(samples_dir, exist_ok=True)
@@ -54,6 +54,7 @@ def create_experiment_folders(args):
         "checkpoints_dir": checkpoints_dir,
         "samples_dir": samples_dir,
         "eval_dir": eval_dir,
+        "metrics_dir": metrics_dir,
         "metadata_json_path": os.path.join(exp_dir, "metadata.json"),
         "metrics_csv_path": os.path.join(exp_dir, "metrics.csv"),
     }

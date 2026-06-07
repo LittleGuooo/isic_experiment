@@ -2,6 +2,31 @@ import os
 import torch
 
 
+def get_resume_exp_dir(args):
+    """
+    根据 resume_from_checkpoint 找到原实验目录。
+
+    优先读取 checkpoint 内保存的 exp_dir；
+    如果旧 checkpoint 没有 exp_dir，就根据路径反推：
+        xxx/exp_name/checkpoints/last.pth.tar
+        -> xxx/exp_name
+    """
+    ckpt_path = getattr(args, "resume_from_checkpoint", None)
+
+    if ckpt_path is None:
+        return None
+
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+
+    checkpoint = torch.load(ckpt_path, map_location="cpu")
+
+    if "exp_dir" in checkpoint:
+        return checkpoint["exp_dir"]
+
+    return os.path.dirname(os.path.dirname(os.path.abspath(ckpt_path)))
+
+
 def resume_training_from_checkpoint_if_available(
     args,
     accelerator,

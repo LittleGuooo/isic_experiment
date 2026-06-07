@@ -103,22 +103,22 @@ def load_json(path):
         return json.load(f)
 
 
-def count_labels_from_indices(label_indices, class_names):
+def count_labels_from_indices(labels, indices, class_names):
     """
-    根据整数 label 统计类别数量。
-
-    输入:
-        label_indices: list[int] 或 ndarray
-        class_names: list[str]
-
-    输出:
-        dict，例如 {"MEL": 100, "NV": 200}
+    根据样本索引，从 labels 中取真实类别，再统计类别数量。
     """
     counts = {name: 0 for name in class_names}
 
-    for idx in label_indices:
-        idx = int(idx)
-        counts[class_names[idx]] += 1
+    for sample_idx in indices:
+        label = int(labels[int(sample_idx)])
+
+        if label < 0 or label >= len(class_names):
+            raise ValueError(
+                f"样本 {sample_idx} 的 label={label} 超出类别范围，"
+                f"class_names 长度={len(class_names)}"
+            )
+
+        counts[class_names[label]] += 1
 
     return counts
 

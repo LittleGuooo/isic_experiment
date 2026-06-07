@@ -526,7 +526,7 @@ def _evaluate_if_needed(
     )
 
     current_score = val_metrics["overall"]["balanced_multiclass_accuracy"]
-    is_best = current_score > (best_balanced_acc + args.early_stop_min_delta)
+    is_best = (current_score > (best_balanced_acc + args.early_stop_min_delta)) and (epoch >= args.epochs // 2)
 
     if is_best:
         best_balanced_acc = current_score
@@ -608,18 +608,33 @@ def _record_eval_and_check_early_stop(
 
 def run_training(args):
     """
-    训练模式入口。
-
-    main.py 只把 args 传进来；dataset、dataloader、model、optimizer、scheduler 都在这里构建。
+    主训练流程：
+    1. 设置设备与随机种子
+    2. 构建数据集和增强
+    3. 构建模型、损失函数、优化器、学习率调度器
+    4. 从 checkpoint 恢复训练状态（可选）
+    5. 循环训练每个 epoch
+       - train_one_epoch：训练一个 epoch
+       - 按 eval_freq 评估验证集，更新 best / early-stop
+       - 更新学习率调度器
+       - 保存 last checkpoint
+       - 周期性保存 checkpoint
+    6. 训练结束后运行 test-only
     """
     global best_balanced_acc
 
+    # 设备与随机种子
     device = setup_seed_and_device(args)
+
+    # 构建 train / eval transform
     train_transform, eval_transform = build_transforms(args)
+
+    # 构建原始训练/验证数据集
     train_dataset, val_dataset, class_names, num_classes = build_train_val_datasets(
         args, train_transform, eval_transform
     )
 
+    # 初始化训练状态
     start_epoch = 0
     best_epoch = -1
     early_stop_counter = 0
@@ -627,12 +642,9 @@ def run_training(args):
     checkpoint = None
     best_balanced_acc = 0.0
 
+    # 如果存在 resume checkpoint，加载
     if args.resume is not None and os.path.isfile(args.resume):
         checkpoint = torch.load(args.resume, map_location=device)
-        if "exp_dir" not in checkpoint:
-            raise ValueError(
-                "resume 的 checkpoint 中没有 'exp_dir'，无法复用旧实验目录。"
-            )
         exp_folders = reuse_experiment_folders(checkpoint["exp_dir"])
         exp_name = os.path.basename(checkpoint["exp_dir"])
         print(f"=> reusing experiment folder: {exp_folders['exp_dir']}")
@@ -642,6 +654,7 @@ def run_training(args):
             base_dir="experiments", exp_name=exp_name
         )
 
+    # 路径配置
     metrics_csv_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.csv")
     metrics_json_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.json")
     metadata_json_path = os.path.join(
@@ -649,10 +662,13 @@ def run_training(args):
     )
     best_model_path = os.path.join(exp_folders["checkpoints_dir"], "model_best.pth.tar")
 
+    # 数据分布统计
     train_class_distribution = count_labels_from_dataset(
         train_dataset.labels, class_names
     )
     val_class_distribution = count_labels_from_dataset(val_dataset.labels, class_names)
+
+    # 打印数据集信息
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Val dataset size  : {len(val_dataset)}")
     print_class_distribution(
@@ -662,6 +678,7 @@ def run_training(args):
         "Validation Dataset Class Distribution", val_class_distribution
     )
 
+    # 构建增强训练集（diffusion augmentation）
     aug_output_dir = resolve_aug_output_dir(
         args=args, checkpoint=checkpoint, exp_folders=exp_folders
     )
@@ -674,9 +691,9 @@ def run_training(args):
         output_dir=aug_output_dir,
     )
 
+    # 统计增强后的类别分布
     synth_class_distribution = None
     augmented_train_class_distribution = train_class_distribution
-    # 只有实际产生合成数据时，才统计增强后的类别分布。
     if synth_dataset is not None:
         synth_labels = [label for _, label, _ in synth_dataset.samples]
         synth_class_distribution = count_labels_from_dataset(synth_labels, class_names)
@@ -692,12 +709,14 @@ def run_training(args):
             augmented_train_class_distribution,
         )
 
+    # 构建 DataLoader
     loaders = build_dataloaders(
         args, train_dataset=final_train_dataset, val_dataset=val_dataset, device=device
     )
     train_loader = loaders["train"]
     val_loader = loaders["val"]
 
+    # 构建模型、损失函数、优化器、调度器、GradScaler
     model = build_classifier(
         args=args, num_classes=num_classes, device=device, use_pretrained=True
     )
@@ -713,7 +732,7 @@ def run_training(args):
         "cuda", enabled=(device.type == "cuda" and args.use_amp)
     )
 
-    # 恢复模型、优化器、调度器和 AMP scaler，保证训练能从中断处继续。
+    # 如果有 checkpoint，则加载训练状态
     if checkpoint is not None:
         start_epoch = checkpoint["epoch"]
         best_balanced_acc = checkpoint.get(
@@ -732,6 +751,7 @@ def run_training(args):
         )
         print(f"=> training will continue from epoch {start_epoch + 1}")
 
+    # 保存实验 metadata
     experiment_metadata = _build_training_metadata(
         args=args,
         exp_name=exp_name,
@@ -753,9 +773,11 @@ def run_training(args):
     )
     save_json(experiment_metadata, metadata_json_path)
 
-    # 主训练循环：每个 epoch 训练一次，只在 eval_freq 指定的轮次做验证。
+    # ==== 主训练循环 ====
     for epoch in range(start_epoch, args.epochs):
         print(f"\n{'=' * 25} Epoch {epoch + 1}/{args.epochs} {'=' * 25}")
+
+        # 训练一个 epoch
         train_metrics = train_one_epoch(
             train_loader=train_loader,
             model=model,
@@ -767,7 +789,7 @@ def run_training(args):
             use_amp=(device.type == "cuda" and args.use_amp),
         )
 
-        # 按 eval_freq 验证，并更新 best / early-stop 计数。
+        # 按 eval_freq 评估验证集
         (
             do_eval,
             val_metrics,
@@ -789,10 +811,10 @@ def run_training(args):
             early_stop_counter=early_stop_counter,
         )
 
-        # 每个 epoch 结束后更新学习率。
+        # 更新学习率
         scheduler.step()
 
-        # 每轮都保存 last checkpoint，用于中断后继续训练。
+        # 构建 checkpoint 状态并保存 last checkpoint
         state = _build_checkpoint_state(
             args=args,
             epoch=epoch + 1,
@@ -817,9 +839,8 @@ def run_training(args):
             filename="last.pth.tar",
         )
 
-        # 周期性保存 checkpoint。
-        do_save = (epoch + 1) % args.save_freq == 0
-        if do_save:
+        # 周期性保存 checkpoint
+        if (epoch + 1) % args.save_freq == 0:
             save_checkpoint(
                 state,
                 False,
@@ -827,7 +848,7 @@ def run_training(args):
                 filename=f"checkpoint_epoch_{epoch + 1:03d}.pth.tar",
             )
 
-        # 验证轮次写 val 指标、更新 metadata、检查 early stopping。
+        # 记录验证指标并检查 early stopping
         if do_eval:
             early_stopped = _record_eval_and_check_early_stop(
                 args=args,
@@ -845,24 +866,18 @@ def run_training(args):
                 early_stop_counter=early_stop_counter,
                 early_stopped=early_stopped,
             )
-
             if early_stopped:
                 break
         else:
             print(
-                f"Epoch {epoch + 1}/{args.epochs} | "
-                f"train_loss={train_metrics['train_loss']:.4f}"
+                f"Epoch {epoch + 1}/{args.epochs} | train_loss={train_metrics['train_loss']:.4f}"
             )
 
-    # 训练结束运行test-only
-    last_ckpt_path = os.path.join(
-        exp_folders["checkpoints_dir"],
-        "model_best.pth.tar",
+    # 训练结束后运行 test-only
+    last_ckpt_path = os.path.join(exp_folders["checkpoints_dir"], "model_best.pth.tar")
+    print(
+        f"\n>>> Training finished. Running test with last checkpoint: {last_ckpt_path}"
     )
-
-    print(f"\n>>> Training finished. Running test with last checkpoint:")
-    print(f">>> {last_ckpt_path}")
-
     args.test_checkpoint = last_ckpt_path
     run_test(args)
 
@@ -919,9 +934,12 @@ def _resolve_test_output_exp_dir(checkpoint, checkpoint_path):
 
 def run_test(args):
     """
-    仅测试模式入口。
-
-    加载 checkpoint 后，只在 test set 上评估。
+    test-only 流程：
+    1. 设置设备
+    2. 构建 test 数据集
+    3. 加载 checkpoint 并构建模型
+    4. 构建 DataLoader
+    5. 评估 test set 并保存指标/metadata
     """
     if args.test_checkpoint is None:
         raise ValueError("启用 test-only 时，必须提供 --test-checkpoint。")
@@ -938,42 +956,43 @@ def run_test(args):
         device=device,
         fallback_num_classes=fallback_num_classes,
     )
+
     class_names = ckpt_class_names if ckpt_class_names is not None else test_class_names
     if class_names != test_class_names:
         print(
-            "Warning: checkpoint 中的 class_names 与 test CSV 类别列不完全一致，将按 checkpoint 顺序评估。"
+            "Warning: checkpoint class_names 与 test CSV 不一致，将按 checkpoint 顺序评估。"
         )
 
+    # 决定 test 输出目录
     ckpt_exp_dir = _resolve_test_output_exp_dir(
-        checkpoint=checkpoint,
-        checkpoint_path=args.test_checkpoint,
+        checkpoint=checkpoint, checkpoint_path=args.test_checkpoint
     )
-
     exp_name = "run_test"
-    exp_folders = setup_experiment_folders(
-        base_dir=ckpt_exp_dir,
-        exp_name=exp_name,
-    )
+    exp_folders = setup_experiment_folders(base_dir=ckpt_exp_dir, exp_name=exp_name)
 
-    print(f"=> test outputs will be saved to: {exp_folders['exp_dir']}")
+    # 输出路径
     metrics_csv_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.csv")
     metrics_json_path = os.path.join(exp_folders["metrics_dir"], "epoch_metrics.json")
     metadata_json_path = os.path.join(
         exp_folders["metadata_dir"], "experiment_metadata.json"
     )
 
+    # 损失函数
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing).to(device)
 
+    # 数据分布统计
     test_class_distribution = count_labels_from_dataset(
         test_dataset.labels, test_class_names
     )
     print(f"Test dataset size: {len(test_dataset)}")
     print_class_distribution("Test Dataset Class Distribution", test_class_distribution)
 
+    # 构建 DataLoader
     test_loader = build_dataloaders(args, test_dataset=test_dataset, device=device)[
         "test"
     ]
 
+    # 保存 metadata
     experiment_metadata = {
         "experiment_name": exp_name,
         "experiment_dir": exp_folders["exp_dir"],
@@ -1000,6 +1019,7 @@ def run_test(args):
     }
     save_json(experiment_metadata, metadata_json_path)
 
+    # ==== 评估 test set ====
     test_metrics = evaluate(
         loader=test_loader,
         model=model,
@@ -1010,7 +1030,6 @@ def run_test(args):
         output_dirs=exp_folders,
         split_name="test",
     )
-
     test_row = _metric_row("test", 1, None, test_metrics, optimizer=None)
     update_epoch_metrics_csv(metrics_csv_path, test_row)
     update_epoch_metrics_json(metrics_json_path, test_row)
@@ -1026,6 +1045,7 @@ def run_test(args):
     )
     save_json(experiment_metadata, metadata_json_path)
 
+    # 打印 test 结果
     print("\n========================= Test Result =========================")
     print(f"test_loss                 : {test_metrics['loss']:.6f}")
     print(f"test_acc                  : {test_metrics['overall']['accuracy']:.4f}")

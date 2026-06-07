@@ -11,13 +11,13 @@ def add_stable_diffusion_lora_args(parser):
     parser.add_argument(
         "--lora_rank",
         type=int,
-        default=16,
+        default=32,
         help="LoRA rank。越大可训练容量越强，但显存占用和过拟合风险也更高。",
     )
     parser.add_argument(
         "--lora_alpha",
         type=int,
-        default=16,
+        default=32,
         help="LoRA alpha。通常先设成和 rank 相同。",
     )
     parser.add_argument(

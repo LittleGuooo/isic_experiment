@@ -10,7 +10,10 @@ from .data import build_datasets_and_loaders
 from .modeling import build_model, build_noise_scheduler
 from .utils import set_seed
 from .experiment import create_experiment_folders, save_json
-from .runtime_engine.checkpoint import resume_training_from_checkpoint_if_available
+from .runtime_engine.checkpoint import (
+    resume_training_from_checkpoint_if_available,
+    get_resume_exp_dir,
+)
 from .runtime_engine.train_loop import run_training_loop
 
 
@@ -181,6 +184,136 @@ def prepare_extra_components_if_needed(accelerator, extra_components):
     return extra_components
 
 
+def _to_jsonable_value(value):
+    """
+    把 argparse 里的值转成 JSON 能稳定保存的格式。
+
+    简单类型直接保存；
+    复杂对象转成字符串，避免 json.dump 报错。
+    """
+    if isinstance(value, (int, float, str, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _args_to_plain_dict(args):
+    """
+    把 Namespace 转成普通 dict。
+    """
+    return {k: _to_jsonable_value(v) for k, v in vars(args).items()}
+
+
+def _group_args_for_metadata(args):
+    """
+    把 args 按实验复盘时真正关心的类别分组。
+
+    注意：
+    这里只是改变 metadata 的可读性，
+    不改变训练逻辑，不改变 checkpoint，不改变 argparse。
+    """
+    args_dict = _args_to_plain_dict(args)
+
+    groups = {
+        "experiment": [
+            "mode",
+            "run_mode",
+            "output_root",
+            "exp_dir",
+            "resume_from_checkpoint",
+            "seed",
+        ],
+        "data": [
+            "data_root",
+            "dataset",
+            "data_mode",
+            "target_label",
+            "exclude_train_nv",
+            "resolution",
+            "center_crop",
+            "random_flip",
+            "train_batch_size",
+            "eval_batch_size",
+            "num_workers",
+        ],
+        "training": [
+            "num_epochs",
+            "gradient_accumulation_steps",
+            "learning_rate",
+            "lr_warmup_steps",
+            "adam_beta1",
+            "adam_beta2",
+            "adam_weight_decay",
+            "adam_epsilon",
+            "max_grad_norm",
+            "mixed_precision",
+        ],
+        "model": [
+            "model_channels",
+            "num_res_blocks",
+            "channel_mult",
+            "attention_resolutions",
+            "dropout",
+            "use_ema",
+            "ema_decay",
+        ],
+        "diffusion": [
+            "num_train_timesteps",
+            "beta_schedule",
+            "beta_start",
+            "beta_end",
+            "prediction_type",
+            "clip_sample",
+        ],
+        "stable_diffusion": [
+            "pretrained_model_name_or_path",
+            "revision",
+            "variant",
+            "tokenizer_name",
+            "placeholder_token",
+            "initializer_token",
+            "learnable_property",
+            "num_vectors",
+            "validation_prompt",
+            "rank",
+        ],
+        "evaluation": [
+            "eval_epochs",
+            "num_fid_samples_train",
+            "num_fid_samples_val",
+            "enable_per_class_metrics",
+            "save_images_epochs",
+            "save_model_epochs",
+        ],
+        "logging": [
+            "use_tensorboard",
+        ],
+    }
+
+    grouped_args = {}
+
+    used_keys = set()
+
+    for group_name, keys in groups.items():
+        group_values = {}
+
+        for key in keys:
+            if key in args_dict:
+                group_values[key] = args_dict[key]
+                used_keys.add(key)
+
+        if len(group_values) > 0:
+            grouped_args[group_name] = group_values
+
+    # 防止你以后新增 argparse 参数后忘记分类。
+    # 这些参数不会丢，只是暂时放进 other。
+    other_args = {k: v for k, v in args_dict.items() if k not in used_keys}
+
+    if len(other_args) > 0:
+        grouped_args["other"] = other_args
+
+    return grouped_args
+
+
 def save_training_metadata_on_main_process(
     accelerator,
     args,
@@ -205,12 +338,7 @@ def save_training_metadata_on_main_process(
             "class_names": class_names,
             "train_class_distribution": train_class_distribution,
             "val_class_distribution": val_class_distribution,
-            "args": {
-                k: (
-                    v if isinstance(v, (int, float, str, bool)) or v is None else str(v)
-                )
-                for k, v in vars(args).items()
-            },
+            "args": _group_args_for_metadata(args),
         },
         exp_folders["metadata_json_path"],
     )
@@ -242,7 +370,10 @@ def run_train(args):
     # 固定随机种子，尽量提高实验可复现性。
     set_seed(args.seed)
 
-    # 创建实验目录，例如：
+    # 复用旧实验目录或者创建新实验目录
+    resume_exp_dir = get_resume_exp_dir(args)
+    if resume_exp_dir is not None:
+        args.exp_dir = resume_exp_dir
     exp_folders = create_experiment_folders(args)
 
     # 创建 Hugging Face Accelerate 的 Accelerator。
